@@ -11,6 +11,7 @@ from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 import httpx
 from itertools import islice
+from neo4j import GraphDatabase
 
 # Environment variables
 BEARER_TOKEN = os.getenv("TWITTER_BEARER_TOKEN")
@@ -28,6 +29,14 @@ GALLABOX_BASE_URL = os.getenv("GALLABOX_BASE_URL")
 GALLABOX_API_KEY = os.getenv("GALLABOX_API_KEY")
 GALLABOX_API_SECRET = os.getenv("GALLABOX_API_SECRET")
 TRADONOMY_CHANNEL_ID = os.getenv("TRADONOMY_CHANNEL_ID")
+MAX_DAILY_TWEETS = int(os.getenv("MAX_DAILY_TWEETS", 500))
+MAX_MONTHLY_TWEETS = int(os.getenv("MAX_MONTHLY_TWEETS", 15000))
+
+# Load Neo4j credentials
+uri = os.getenv("NEO4J_URI")
+user = os.getenv("NEO4J_USER")
+password = os.getenv("NEO4J_PASSWORD")
+
 
 # AI Variables
 class AI_Variables:
@@ -155,7 +164,7 @@ def fetch_similar_entities(conn, entity_name, table_name, column_name, top_n=3):
     return [record[0] for record in results if abs(record[1] - results[0][1]) < 0.04]
 
 def get_users_for_entity(conn, entity_id):
-    """Retrieve users watching or holding a given entity."""
+    """Retrieve users watching or holding a given """
     cursor = conn.cursor()
     query = """
         SELECT DISTINCT user_id, phone_number, name
@@ -236,16 +245,38 @@ async def send_bulk_notifications(receivers_list, message):
         except Exception as e:
             print("Error occurred:", e)
 
-async def process_tweets(tweets):
+
+
+class Neo4jConnector:
+    def __init__(self, uri, user, password):
+        try:
+            self.driver = GraphDatabase.driver(uri, auth=(user, password), max_connection_lifetime=300)
+        except Exception as e:
+            print(f"Error connecting to Neo4j: {e}")
+
+    def close(self):
+        self.driver.close()
+
+    def query(self, cypher_query, parameters=None):
+        try:
+            with self.driver.session() as session:
+                result = session.run(cypher_query, parameters or {})
+                return [record.data() for record in result]
+        except Exception as e:
+            print(f"Error running Cypher query: {e}")
+            return []
+
+
+connector = Neo4jConnector(uri, user, password)
+
+
+async def process_tweets(conn, tweets):
     """Process tweets, extract entities, find users, and send notifications."""
     if not tweets:
         print("No new tweets to process.")
         return
     
     try:
-        conn = psycopg2.connect(
-            host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASSWORD, port=DB_PORT
-        )
         cursor = conn.cursor()
         
         print(type(tweets))
@@ -295,12 +326,42 @@ async def process_tweets(tweets):
             print(f"Matched entities: {matched_entities}")
             # Retrieve users watching these entities
 
+
             receivers = set()  # Using a set to ensure uniqueness
 
             for entity in matched_entities:
                 cursor.execute("SELECT id FROM entity WHERE entity_name = %s", (entity,))
                 entity_id = cursor.fetchone()
+                cursor.execute("SELECT entity_type FROM entity WHERE entity_name = %s", (entity,))
+                entity_type = cursor.fetchone()
+                entity_type = entity_type[0] if entity_type else None
+                cypher_query = None
+                if entity_type == 'stock':
+                    cypher_query = f"""MATCH (s:Stock) WHERE s.stock_name CONTAINS("{entity}") RETURN s LIMIT 1"""
+                if entity_type == 'mutual_fund':
+                    cypher_query = f"""MATCH (s:MutualFund) WHERE s.scheme_name CONTAINS("{entity}") RETURN s LIMIT 1"""
+                if entity_type == 'index':
+                    cypher_query = f"""MATCH (s:Index) WHERE s.index_name CONTAINS("{entity}") RETURN s LIMIT 1"""
                 
+                if cypher_query:
+                    result = connector.query(cypher_query)
+                    if result:
+                        json_data = result[0]['s']
+                        print(json_data)
+                        json_load = json.dumps(json_data)
+
+                        if json_data:
+                            tweet_text = f"""🚀 {entity} has been mentioned in a recent notification! 🚀\n
+                                \nHere are some details about {entity}:\n\n
+                                Biz Score: {json_data['mutual_fund_business_score']*100}%\n
+                                Valuation: {json_data['mutual_fund_valuation_score']*100}%\n
+                            """
+                            if entity_type == 'stock':
+                                tweet_text = f"""
+                                    EOD Price: {json_data['eod_price']}\n
+                                    Market Cap: {json_data['market_cap']}\n
+                                """
+        
                 if entity_id:
                     users = get_users_for_entity(conn, entity_id[0])
                     for user_id, phone_number, user_name in users:
@@ -315,25 +376,119 @@ async def process_tweets(tweets):
             # Send notifications to all the users at once
             await send_bulk_notifications(receivers_list, tweet_text)
 
-        conn.commit()
         cursor.close()
-        conn.close()
         print("Tweet processing complete.")
     except Exception as e:
         print(f"Error processing tweets: {e}")
 
 
+def get_tweet_counts(conn):
+    """Fetch today's and this month's tweet counts from the counter table."""
+    cursor = conn.cursor()
+    today = datetime.utcnow().date()
+    current_month = datetime.utcnow().strftime("%Y-%m")
+
+    cursor.execute("""
+        SELECT daily_tweet_count, monthly_tweet_count FROM counter 
+        WHERE date = %s OR month = %s
+    """, (today, current_month))
+    
+    counts = cursor.fetchall()
+    
+    daily_count = 0
+    monthly_count = 0
+    for row in counts:
+        if len(row) == 2:
+            daily_count, monthly_count = row
+
+    return daily_count, monthly_count
+
+
+def update_tweet_counts(conn, new_tweets):
+    """Update tweet counts after fetching new tweets."""
+    cursor = conn.cursor()
+    today = datetime.utcnow().date()
+    current_month = datetime.utcnow().strftime("%Y-%m")
+    new_count = len(new_tweets)  # Number of new tweets fetched
+
+    # Ensure daily entry exists, otherwise initialize
+    cursor.execute("""
+        INSERT INTO counter (date, month, daily_tweet_count, monthly_tweet_count)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (date) 
+        DO UPDATE SET daily_tweet_count = counter.daily_tweet_count + %s
+    """, (today, current_month, new_count, new_count, new_count))
+
+    # Ensure monthly entry exists, otherwise initialize
+    cursor.execute("""
+        INSERT INTO counter (month, monthly_tweet_count)
+        VALUES (%s, %s)
+        ON CONFLICT (month) 
+        DO UPDATE SET monthly_tweet_count = counter.monthly_tweet_count + %s
+    """, (current_month, new_count, new_count))
+
+    conn.commit()
+
 
 async def async_lambda_handler(event, context):
     """AWS Lambda handler function."""
-    tweets = get_recent_tweets()
-    print(tweets)
-    await process_tweets(tweets)
-    return {
-        "statusCode": 200,
-        "body": json.dumps({"message": "Tweets fetched, processed, and notifications sent."})
-    }
+    try:
+        # Connect to the database
+        conn = psycopg2.connect(
+            host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASSWORD, port=DB_PORT
+        )
 
+        # Fetch current tweet counts
+        daily_count, monthly_count = get_tweet_counts(conn)
+        print(f"Current tweet counts - Daily: {daily_count}, Monthly: {monthly_count}")
+
+        # Check if limits are exceeded
+        if daily_count >= MAX_DAILY_TWEETS:
+            print("Daily tweet limit reached. Skipping processing.")
+            return {
+                "statusCode": 200,
+                "body": json.dumps({"message": "Daily tweet limit reached. No tweets processed."})
+            }
+
+        if monthly_count >= MAX_MONTHLY_TWEETS:
+            print("Monthly tweet limit reached. Skipping processing.")
+            return {
+                "statusCode": 200,
+                "body": json.dumps({"message": "Monthly tweet limit reached. No tweets processed."})
+            }
+
+        # Fetch new tweets
+        tweets = get_recent_tweets()
+        # tweets = [{'created_at': '2025-03-05T07:04:33.000Z', 'edit_history_tweet_ids': ['1897181419971219750'], 'text': "#StartupNews | Badminton icon @NSaina forays into the business world — joining menstrual hygiene brand #Naarica (@NInfo75118) as an investor and brand ambassador — promoting women's health and empowerment\n\nBy: @Zenia171996 | @CNBCYoungTurks  \n\nhttps://t.co/jMPKzgz0LS", 'id': '1897181419971219750', 'author_id': '631810714'}, {'created_at': '2025-03-05T07:04:29.000Z', 'edit_history_tweet_ids': ['1897181406012596483'], 'text': 'Company: HMA Agro Indus\n\nUpdate Type: Important Company Update | Sentiment: Positive 🟢\n\nSummary: HMA Agro Industries Limited entered a 2-year facilities agreement with MARYA FROZEN AGRO FOOD PRODUCTS for processing frozen halal meat.', 'id': '1897181406012596483', 'author_id': '1864603590201110528'}, {'created_at': '2025-03-05T07:02:02.000Z', 'edit_history_tweet_ids': ['1897180786228650206'], 'text': 'How’s the F&amp;O set up looking at mid-day, @blitzkreigm decodes https://t.co/6g6FjOf5zs', 'id': '1897180786228650206', 'author_id': '631810714'}, {'created_at': '2025-03-05T06:57:39.000Z', 'edit_history_tweet_ids': ['1897179684666008001'], 'text': '#CNBCTV18Market  |  #Dividend Stock Alert! \n\nThis #NavratnaPSU has announced its highest payout in three years  \n\nDo you own it?\n\nLet us know in the comment box! \n\n#StockMarket  #stockmarketindia #StocksToTrade #StocksInFocus  #StocksToFocus \n\nhttps://t.co/Nq2ZgOEwGT', 'id': '1897179684666008001', 'author_id': '631810714'}, {'created_at': '2025-03-05T06:51:13.000Z', 'edit_history_tweet_ids': ['1897178066654519570'], 'text': '#ChampionsTrophy2025  | Australian batter #SteveSmith announces his retirement from ODIs, a day after Australia’s exit from #ChampionsTrophy  \n\n@jha_tarkesh  | #SteveSmithRetires #SteveSmithRetirement #ICCChampionsTrophy \n\nhttps://t.co/sdlKf8UATg', 'id': '1897178066654519570', 'author_id': '631810714'}, {'created_at': '2025-03-05T06:50:19.000Z', 'edit_history_tweet_ids': ['1897177838278844419'], 'text': 'Stock In Focus | Brokerage Motilal Oswal believes telecom major Bharti Airtel (@airtelnews) will intensify focus on capital allocation plans. The brokerage has a #buy call on the stock with a target price of Rs 1,985\n\n@Reematendulkar, @MotilalOswalLtd https://t.co/TlHaWm91aa', 'id': '1897177838278844419', 'author_id': '631810714'}, {'created_at': '2025-03-05T06:49:48.000Z', 'edit_history_tweet_ids': ['1897177708813279699'], 'text': 'Women who win! An exclusive interaction; Catch Saina Nehwal and Shruti Chand talk about their power journey and how they charted their path to peak on CNBC-TV18, today at 5:30 PM. Tune-in!\n\n#FutureFemaleForward #FutureisHERs #PoweredByParity #GenderParity #FFFSeason3 #Parity… https://t.co/dMcqD3icH5 https://t.co/YPT0zORIkt', 'id': '1897177708813279699', 'author_id': '631810714'}, {'created_at': '2025-03-05T06:43:57.000Z', 'edit_history_tweet_ids': ['1897176237715726532'], 'text': '#BharatForge in focus as February Class 8 truck orders saw a sharp drop in Feb both YoY &amp; MoM. \n\n@sudarshankr https://t.co/PdD987GrKZ', 'id': '1897176237715726532', 'author_id': '631810714'}, {'created_at': '2025-03-05T06:43:12.000Z', 'edit_history_tweet_ids': ['1897176048971997689'], 'text': 'Stock in Focus | #Granules under pressure after US FDA warning letter on #Gagillapur facility flags data integrity &amp; quality and contamination issues. \n@vinnii_motiwala https://t.co/tzMY7u3ttU', 'id': '1897176048971997689', 'author_id': '631810714'}, {'created_at': '2025-03-05T06:39:49.000Z', 'edit_history_tweet_ids': ['1897175195858939913'], 'text': 'RT @CNBCTV18Live: #NSE expiry day change: Is one expiry day for all exchanges the answer?\n\nClick the link below for further details👇\nhttps:…', 'id': '1897175195858939913', 'author_id': '631810714'}]
+        print(tweets)
+        new_tweet_count = len(tweets)
+        print(f"Fetched {new_tweet_count} new tweets.")
+
+        if new_tweet_count == 0:
+            return {
+                "statusCode": 200,
+                "body": json.dumps({"message": "No new tweets to process."})
+            }
+
+        # Update tweet counts
+        update_tweet_counts(conn, tweets)
+
+        # Process tweets
+        await process_tweets(conn, tweets)
+        return {
+            "statusCode": 200,
+            "body": json.dumps({"message": "Tweets fetched, processed, and notifications sent."})
+        }
+    
+    except Exception as e:
+        print(f"Error in Lambda Handler: {e}")
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"error": str(e)})
+        }
+    finally:
+        conn.commit()
+        conn.close()
 
 import asyncio
 
