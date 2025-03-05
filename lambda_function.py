@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 import httpx
 from itertools import islice
 from neo4j import GraphDatabase
+import re
 
 # Environment variables
 BEARER_TOKEN = os.getenv("TWITTER_BEARER_TOKEN")
@@ -270,6 +271,12 @@ class Neo4jConnector:
 connector = Neo4jConnector(uri, user, password)
 
 
+def clean_tweet(text):
+    text = text.replace("\n", " ").replace("\t", " ")  # Remove newlines and tabs
+    text = re.sub(r" {5,}", "    ", text)  # Replace more than 4 spaces with 4 spaces
+    return text.strip()
+
+
 async def process_tweets(conn, tweets):
     """Process tweets, extract entities, find users, and send notifications."""
     if not tweets:
@@ -279,13 +286,11 @@ async def process_tweets(conn, tweets):
     try:
         cursor = conn.cursor()
         
-        print(type(tweets))
         for tweet in tweets:
-            print(tweet)
-            print(type(tweet))
             # Extract tweet details safely
             tweet_id = str(tweet.get("id"))  # Ensure it's a string
             tweet_text = tweet.get("text", "").strip()
+            tweet_text = clean_tweet(tweet_text)
             user_id = tweet.get("author_id", "")
             user_name = USER_MAP.get(user_id, "Unknown")
             created_at = tweet.get("created_at", "")
@@ -351,16 +356,9 @@ async def process_tweets(conn, tweets):
                         json_load = json.dumps(json_data)
 
                         if json_data:
-                            tweet_text = f"""🚀 {entity} has been mentioned in a recent notification! 🚀\n
-                                \nHere are some details about {entity}:\n\n
-                                Biz Score: {json_data['mutual_fund_business_score']*100}%\n
-                                Valuation: {json_data['mutual_fund_valuation_score']*100}%\n
-                            """
+                            tweet_text += f""" {entity} has been mentioned in a recent notification!  Here are some details about {entity}:  Biz Score: {json_data['mutual_fund_business_score']*100}% Valuation: {json_data['mutual_fund_valuation_score']*100}%"""
                             if entity_type == 'stock':
-                                tweet_text = f"""
-                                    EOD Price: {json_data['eod_price']}\n
-                                    Market Cap: {json_data['market_cap']}\n
-                                """
+                                tweet_text += f"""EOD Price: {json_data['eod_price']} Market Cap: {json_data['market_cap']} """
         
                 if entity_id:
                     users = get_users_for_entity(conn, entity_id[0])
@@ -411,21 +409,38 @@ def update_tweet_counts(conn, new_tweets):
     current_month = datetime.utcnow().strftime("%Y-%m")
     new_count = len(new_tweets)  # Number of new tweets fetched
 
-    # Ensure daily entry exists, otherwise initialize
+    # Step 1: Try inserting daily entry
     cursor.execute("""
         INSERT INTO counter (date, month, daily_tweet_count, monthly_tweet_count)
-        VALUES (%s, %s, %s, %s)
-        ON CONFLICT (date) 
-        DO UPDATE SET daily_tweet_count = counter.daily_tweet_count + %s
-    """, (today, current_month, new_count, new_count, new_count))
+        VALUES (%s, %s, %s, 0)
+        ON CONFLICT (date) DO NOTHING
+        RETURNING date
+    """, (today, current_month, new_count))
+    daily_inserted = cursor.fetchone()  # Will be None if conflict happened
 
-    # Ensure monthly entry exists, otherwise initialize
+    # Step 2: Try inserting monthly entry
     cursor.execute("""
         INSERT INTO counter (month, monthly_tweet_count)
-        VALUES (%s, %s)
-        ON CONFLICT (month) 
-        DO UPDATE SET monthly_tweet_count = counter.monthly_tweet_count + %s
-    """, (current_month, new_count, new_count))
+        VALUES (%s, 0)
+        ON CONFLICT (month) DO NOTHING
+        RETURNING month
+    """, (current_month,))
+    monthly_inserted = cursor.fetchone()  # Will be None if conflict happened
+
+    # Step 3: Update only if the records were NOT newly inserted
+    if not daily_inserted:
+        cursor.execute("""
+            UPDATE counter 
+            SET daily_tweet_count = daily_tweet_count + %s 
+            WHERE date = %s
+        """, (new_count, today))
+
+    if not monthly_inserted:
+        cursor.execute("""
+            UPDATE counter 
+            SET monthly_tweet_count = monthly_tweet_count + %s 
+            WHERE month = %s
+        """, (new_count, current_month))
 
     conn.commit()
 
