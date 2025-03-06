@@ -146,7 +146,7 @@ def is_tweet_stored(conn, tweet_id):
     result = cursor.fetchone()
     return result is not None  # True if tweet exists, False otherwise
 
-def fetch_similar_entities(conn, entity_name, table_name, column_name, top_n=3):
+def fetch_similar_entities(conn, entity_name, table_name, column_name, top_n=1):
     """Find similar entities based on vector similarity."""
     cursor = conn.cursor()
     embedding = generate_embedding(entity_name)
@@ -162,7 +162,7 @@ def fetch_similar_entities(conn, entity_name, table_name, column_name, top_n=3):
     """
     cursor.execute(query, (embedding_array, top_n))
     results = cursor.fetchall()
-    return [record[0] for record in results if abs(record[1] - results[0][1]) < 0.04]
+    return [record[0] for record in results]
 
 def get_users_for_entity(conn, entity_id):
     """Retrieve users watching or holding a given """
@@ -182,7 +182,6 @@ def get_users_for_entity(conn, entity_id):
             JOIN users u ON p.user_id = u.user_id
             WHERE ph.entity_id = %s
         ) AS user_data;
-
     """
     cursor.execute(query, (entity_id, entity_id))
     return cursor.fetchall()  # Returns [(user_id, phone_number), ...]
@@ -215,7 +214,8 @@ async def send_bulk_notifications(receivers_list, message):
                     "bodyValues": {
                         "1": user["user_name"] if user["user_name"] else "User",
                         "2": user["entity"],
-                        "3": message
+                        "3": message,
+                        "4": user["stock_info"] if user["stock_info"] else "No additional information available."
                     }
                 }
             }
@@ -229,7 +229,7 @@ async def send_bulk_notifications(receivers_list, message):
             "whatsapp": {
                 "type": "template",
                 "template": {
-                    "templateName": "updates_template",
+                    "templateName": "updates_template_alpha",
                     "bodyValues": {
                         "1": "User Name",
                         "2": "Stock Name",
@@ -320,12 +320,11 @@ async def process_tweets(conn, tweets):
 
             # Extract relevant entities
             extracted_data = extracting_data(tweet_text)
-            entities_to_check = extracted_data["stock"] + extracted_data["mutual_fund"]
             matched_entities = set()
-
-            for entity_name in entities_to_check:
-                # Find similar stocks & mutual funds
+            for entity_name in extracted_data["stock"]:
                 matched_entities.update(fetch_similar_entities(conn, entity_name, "stock_info", "stock_name"))
+                
+            for entity_name in extracted_data["mutual_fund"]:
                 matched_entities.update(fetch_similar_entities(conn, entity_name, "mutual_fund_info", "mutual_fund"))
 
             print(f"Matched entities: {matched_entities}")
@@ -348,29 +347,44 @@ async def process_tweets(conn, tweets):
                 if entity_type == 'index':
                     cypher_query = f"""MATCH (s:Index) WHERE s.index_name CONTAINS("{entity}") RETURN s LIMIT 1"""
                 
+                stock_info = ""
                 if cypher_query:
                     result = connector.query(cypher_query)
                     if result:
                         json_data = result[0]['s']
-                        print(json_data)
+                        # print(json_data)
                         json_load = json.dumps(json_data)
 
                         if json_data:
-                            tweet_text += f""" {entity} has been mentioned in a recent notification!  Here are some details about {entity}:  Biz Score: {json_data['mutual_fund_business_score']*100}% Valuation: {json_data['mutual_fund_valuation_score']*100}%"""
+                            stock_info += f""" {entity} has been mentioned in a recent notification!  Here are some details about {entity}: """
+                            if entity_type == 'mutual_fund':
+                                if json_data['mutual_fund_business_score'] and json_data['mutual_fund_valuation_score']:
+                                    stock_info += f""" Biz Score: {json_data['mutual_fund_business_score']*100}% Valuation: {json_data['mutual_fund_valuation_score']*100}%"""
                             if entity_type == 'stock':
-                                tweet_text += f"""EOD Price: {json_data['eod_price']} Market Cap: {json_data['market_cap']} """
+                                stock_info += f"""EOD Price: {json_data['eod_price']} Market Cap: {json_data['market_cap']} """
         
                 if entity_id:
                     users = get_users_for_entity(conn, entity_id[0])
                     for user_id, phone_number, user_name in users:
-                        receivers.add((entity, user_name if user_name else "User", phone_number))  # Ensure uniqueness
+                        receivers.add((entity, user_name if user_name else "User", phone_number, stock_info))  # Ensure uniqueness
 
             # Convert set to list of dictionaries
             receivers_list = [
-                {"entity": entity, "user_name": user_name, "phone_number": phone_number}
-                for entity, user_name, phone_number in receivers
+                {"entity": entity, "user_name": user_name, "phone_number": phone_number, "stock_info": stock_info}
+                for entity, user_name, phone_number, stock_info in receivers
             ]
-            
+
+            for receiver in receivers_list:
+                conn.execute("SELECT user_id FROM users WHERE phone_number = %s", (phone_number,))
+                user = conn.fetchone()
+                if not user:
+                    raise Exception(status_code=404, detail="User not found")
+
+                user_id = user["user_id"]
+                cur.execute("INSERT INTO message_history (user_id, sender, message_text, message_type) VALUES (%s, 'bot', %s, text)",(user_id, message_text),)
+
+
+
             # Send notifications to all the users at once
             await send_bulk_notifications(receivers_list, tweet_text)
 
@@ -418,24 +432,30 @@ def update_tweet_counts(conn, new_tweets):
     """, (today, current_month, new_count))
     daily_inserted = cursor.fetchone()  # Will be None if conflict happened
 
-    # Step 2: Try inserting monthly entry
-    cursor.execute("""
-        INSERT INTO counter (month, monthly_tweet_count)
-        VALUES (%s, 0)
-        ON CONFLICT (month) DO NOTHING
-        RETURNING month
-    """, (current_month,))
-    monthly_inserted = cursor.fetchone()  # Will be None if conflict happened
+    # Step 2: Calculate total monthly count if today's entry was newly inserted
+    if daily_inserted:
+        cursor.execute("""
+            SELECT COALESCE(SUM(monthly_tweet_count), 0) 
+            FROM counter 
+            WHERE month = %s
+        """, (current_month,))
+        previous_monthly_count = cursor.fetchone()[0]  # Sum of all previous month values
+        total_monthly_count = previous_monthly_count + new_count
 
-    # Step 3: Update only if the records were NOT newly inserted
-    if not daily_inserted:
+        # Step 3: Update the newly inserted row with the correct monthly count
+        cursor.execute("""
+            UPDATE counter 
+            SET monthly_tweet_count = %s 
+            WHERE date = %s
+        """, (total_monthly_count, today))
+    else:
+        # Step 4: If today's row already existed, just update the counts
         cursor.execute("""
             UPDATE counter 
             SET daily_tweet_count = daily_tweet_count + %s 
             WHERE date = %s
         """, (new_count, today))
 
-    if not monthly_inserted:
         cursor.execute("""
             UPDATE counter 
             SET monthly_tweet_count = monthly_tweet_count + %s 
@@ -443,7 +463,6 @@ def update_tweet_counts(conn, new_tweets):
         """, (new_count, current_month))
 
     conn.commit()
-
 
 async def async_lambda_handler(event, context):
     """AWS Lambda handler function."""
@@ -473,9 +492,9 @@ async def async_lambda_handler(event, context):
             }
 
         # Fetch new tweets
-        tweets = get_recent_tweets()
-        # tweets = [{'created_at': '2025-03-05T07:04:33.000Z', 'edit_history_tweet_ids': ['1897181419971219750'], 'text': "#StartupNews | Badminton icon @NSaina forays into the business world — joining menstrual hygiene brand #Naarica (@NInfo75118) as an investor and brand ambassador — promoting women's health and empowerment\n\nBy: @Zenia171996 | @CNBCYoungTurks  \n\nhttps://t.co/jMPKzgz0LS", 'id': '1897181419971219750', 'author_id': '631810714'}, {'created_at': '2025-03-05T07:04:29.000Z', 'edit_history_tweet_ids': ['1897181406012596483'], 'text': 'Company: HMA Agro Indus\n\nUpdate Type: Important Company Update | Sentiment: Positive 🟢\n\nSummary: HMA Agro Industries Limited entered a 2-year facilities agreement with MARYA FROZEN AGRO FOOD PRODUCTS for processing frozen halal meat.', 'id': '1897181406012596483', 'author_id': '1864603590201110528'}, {'created_at': '2025-03-05T07:02:02.000Z', 'edit_history_tweet_ids': ['1897180786228650206'], 'text': 'How’s the F&amp;O set up looking at mid-day, @blitzkreigm decodes https://t.co/6g6FjOf5zs', 'id': '1897180786228650206', 'author_id': '631810714'}, {'created_at': '2025-03-05T06:57:39.000Z', 'edit_history_tweet_ids': ['1897179684666008001'], 'text': '#CNBCTV18Market  |  #Dividend Stock Alert! \n\nThis #NavratnaPSU has announced its highest payout in three years  \n\nDo you own it?\n\nLet us know in the comment box! \n\n#StockMarket  #stockmarketindia #StocksToTrade #StocksInFocus  #StocksToFocus \n\nhttps://t.co/Nq2ZgOEwGT', 'id': '1897179684666008001', 'author_id': '631810714'}, {'created_at': '2025-03-05T06:51:13.000Z', 'edit_history_tweet_ids': ['1897178066654519570'], 'text': '#ChampionsTrophy2025  | Australian batter #SteveSmith announces his retirement from ODIs, a day after Australia’s exit from #ChampionsTrophy  \n\n@jha_tarkesh  | #SteveSmithRetires #SteveSmithRetirement #ICCChampionsTrophy \n\nhttps://t.co/sdlKf8UATg', 'id': '1897178066654519570', 'author_id': '631810714'}, {'created_at': '2025-03-05T06:50:19.000Z', 'edit_history_tweet_ids': ['1897177838278844419'], 'text': 'Stock In Focus | Brokerage Motilal Oswal believes telecom major Bharti Airtel (@airtelnews) will intensify focus on capital allocation plans. The brokerage has a #buy call on the stock with a target price of Rs 1,985\n\n@Reematendulkar, @MotilalOswalLtd https://t.co/TlHaWm91aa', 'id': '1897177838278844419', 'author_id': '631810714'}, {'created_at': '2025-03-05T06:49:48.000Z', 'edit_history_tweet_ids': ['1897177708813279699'], 'text': 'Women who win! An exclusive interaction; Catch Saina Nehwal and Shruti Chand talk about their power journey and how they charted their path to peak on CNBC-TV18, today at 5:30 PM. Tune-in!\n\n#FutureFemaleForward #FutureisHERs #PoweredByParity #GenderParity #FFFSeason3 #Parity… https://t.co/dMcqD3icH5 https://t.co/YPT0zORIkt', 'id': '1897177708813279699', 'author_id': '631810714'}, {'created_at': '2025-03-05T06:43:57.000Z', 'edit_history_tweet_ids': ['1897176237715726532'], 'text': '#BharatForge in focus as February Class 8 truck orders saw a sharp drop in Feb both YoY &amp; MoM. \n\n@sudarshankr https://t.co/PdD987GrKZ', 'id': '1897176237715726532', 'author_id': '631810714'}, {'created_at': '2025-03-05T06:43:12.000Z', 'edit_history_tweet_ids': ['1897176048971997689'], 'text': 'Stock in Focus | #Granules under pressure after US FDA warning letter on #Gagillapur facility flags data integrity &amp; quality and contamination issues. \n@vinnii_motiwala https://t.co/tzMY7u3ttU', 'id': '1897176048971997689', 'author_id': '631810714'}, {'created_at': '2025-03-05T06:39:49.000Z', 'edit_history_tweet_ids': ['1897175195858939913'], 'text': 'RT @CNBCTV18Live: #NSE expiry day change: Is one expiry day for all exchanges the answer?\n\nClick the link below for further details👇\nhttps:…', 'id': '1897175195858939913', 'author_id': '631810714'}]
-        print(tweets)
+        # tweets = get_recent_tweets()
+        tweets =[{'text': "'I want you to make your own money and not use what I have earned over the years,' JSW Chairman Sajjan Jindal told his Harvard-educated son, who wanted to invest in an EV company. \n\nHe further added that Harsh Goenka and Uday Kotak's sons were smarter than their fathers!'… https://t.co/vKqVyrGrzE https://t.co/HydA28LBjF", 'id': '1897574058218360986', 'edit_history_tweet_ids': ['1897574058218360986'], 'author_id': '631810714', 'created_at': '2025-03-06T09:04:45.000Z'}, {'text': "#MFCorner | @vinnii_motiwala speaks with Shibani Sircar Kurian of Kotak Mahindra AMC and Priti Rathi Gupta of LXME about rising women investors in mutual fund space in this Women's Day special segment.\n#cnbctv18digital #investment #investors #market \n\nWatch here:… https://t.co/iJoNeCfdYz", 'id': '1897569974614638940', 'edit_history_tweet_ids': ['1897569974614638940'], 'author_id': '631810714', 'created_at': '2025-03-06T08:48:31.000Z'}, {'text': 'Midcap Movers | @vamakshidhoria with the big movers in the broader market today. https://t.co/qFUJp3S1hL', 'id': '1897569136181735921', 'edit_history_tweet_ids': ['1897569136181735921'], 'author_id': '631810714', 'created_at': '2025-03-06T08:45:11.000Z'}, {'text': 'Nothing has launched its latest Phone 3a series featuring Phone 3a Pro at ₹29,999. The smartphone is packed with new periscope lens, advanced AI features, and the iconic Glyph interface. @ShibaniGharat with more.  \n\n#nothingphone #3aseries #Glyphinterface #cnbctv18digital… https://t.co/hNzKHSkAwE https://t.co/jxuLcmyP09', 'id': '1897564899905298943', 'edit_history_tweet_ids': ['1897564899905298943'], 'author_id': '631810714', 'created_at': '2025-03-06T08:28:21.000Z'}, {'text': 'Company: Nestle\n\nUpdate Type: Press Release 📰 | Sentiment: Positive 🟢\n\nSummary: Nespresso opens its first boutique in New Delhi, marking a major expansion in India with significant focus on sustainability and premium coffee experience.', 'id': '1897562650802053212', 'edit_history_tweet_ids': ['1897562650802053212'], 'author_id': '1864603590201110528', 'created_at': '2025-03-06T08:19:25.000Z'}, {'text': 'Company: Maan Aluminium\n\nUpdate Type: Acquisition 🛒\n\n📦Acquired Company: Refer Filing\n\n💼Business Overview: Refer Filing\n\n📊Percentage Acquired: Refer Filing\n\n💰Total Consideration Paid: Rs. 8.75 Crs excluding stamp duty and other charges', 'id': '1897561435393401330', 'edit_history_tweet_ids': ['1897561435393401330'], 'author_id': '1864603590201110528', 'created_at': '2025-03-06T08:14:35.000Z'}, {'text': '#Samsung begins the rollout of #Android15 based One UI 7 for older Galaxy devices. Check if your Galaxy device is eligible or not.\n\n@pihuyadav05 @SamsungIndia @SamsungMobile\n\nhttps://t.co/e3CAedqoIO', 'id': '1897561379973816326', 'edit_history_tweet_ids': ['1897561379973816326'], 'author_id': '631810714', 'created_at': '2025-03-06T08:14:22.000Z'}, {'text': "#Apple's rumoured foldable #iPhone might launch in 2026 with a $2,000 price tag, says analyst @mingchikuo\n\nHere are the details | @pihuyadav05\n@apple\n\nhttps://t.co/tRq7r2paSE", 'id': '1897560748852715770', 'edit_history_tweet_ids': ['1897560748852715770'], 'author_id': '631810714', 'created_at': '2025-03-06T08:11:52.000Z'}, {'text': 'Company: Thomas Cook (India)\n\nUpdate Type: Press Release 📰 | Sentiment: Positive 🟢\n\nSummary: Thomas Cook India and SOTC report a 35% growth in demand from female travelers, emphasizing adventure, wellness, and milestone travel. This highlights potential revenue enhancement and… https://t.co/Lvz1q88TQb', 'id': '1897559419027964191', 'edit_history_tweet_ids': ['1897559419027964191'], 'author_id': '1864603590201110528', 'created_at': '2025-03-06T08:06:35.000Z'}]
+        # print(tweets)
         new_tweet_count = len(tweets)
         print(f"Fetched {new_tweet_count} new tweets.")
 
@@ -505,8 +524,12 @@ async def async_lambda_handler(event, context):
         conn.commit()
         conn.close()
 
+# Run the Lambda handler locally
 import asyncio
+if __name__ == "__main__":
+    asyncio.run(async_lambda_handler({}, {}))
 
-def lambda_handler(event, context):
-    """AWS Lambda synchronous entry point."""
-    return asyncio.run(async_lambda_handler(event, context))
+
+# def lambda_handler(event, context):
+#     """AWS Lambda synchronous entry point."""
+#     return asyncio.run(async_lambda_handler(event, context))
