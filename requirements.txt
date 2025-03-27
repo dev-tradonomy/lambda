@@ -53,3 +53,5 @@ urllib3
 yarl
 zstandard
 neo4j
+beautifulsoup4
+lxml
