@@ -406,18 +406,22 @@ async def process_tweets(conn, tweets):
                         if json_data:
 
                             stock_noti = f"""{entity} has been mentioned in a recent notification! {tweet_text}"""
-                            if json_data['biz_score_percent'] and json_data['valuation_score_percent']:
-                                stock_noti += f""" Biz Score: {json_data['biz_score_percent']*100}% Valuation Score: {json_data['valuation_score_percent']*100}%"""
+                            if entity_type == 'stock':
+                                if json_data.get('biz_score_percent') and json_data.get('valuation_score_percent'):
+                                    stock_noti += f""" Biz Score: {json_data['biz_score_percent']*100}% Valuation Score: {json_data['valuation_score_percent']*100}%"""
+                            if entity_type == 'mutual_fund':
+                                if json_data.get('mutual_fund_business_score') and json_data.get('mutual_fund_valuation_score'):
+                                    stock_noti += f""" Biz Score: {json_data['mutual_fund_business_score']*100}% Valuation: {json_data['mutual_fund_valuation_score']*100}%"""
                             messages = [
                                 {"role": "system", "content": """
                                     You are a concise and actionable stock-analysis assistant. You will receive:
-                                    2. A Biz Score (0.00 - 1.00).
-                                    3. A Valuation Score (0.00 - 1.00).
+                                    2. A Biz Score (0 - 100%).
+                                    3. A Valuation Score (0 - 100%).
 
                                     IMPORTANT NOTE about Valuation Score:
                                     - Higher Valuation Score means more UNDERVALUED.
                                     - Lower Valuation Score means more OVERVALUED.
-                                    (For example, Valuation Score = 0.70 ⇒ the stock is relatively undervalued; 0.30 ⇒ the stock is relatively overvalued.)
+                                    (For example, Valuation Score = 70% ⇒ the stock is relatively undervalued; 30% ⇒ the stock is relatively overvalued.)
 
                                     Your task:
                                     - Output a single short interpretation, in your own words, based on that condition.
@@ -425,6 +429,8 @@ async def process_tweets(conn, tweets):
                                     Make sure your interpretation:
                                     - Is short, direct, and actionable.
                                     - Reflects that a higher Biz Score indicates stronger fundamentals, and a higher Valuation Score indicates more undervaluation.
+
+                                    If the Biz Score or Valuation Score is not available, please do not mention then it in your response and do not ask for them. Do the analysis without them.
                                 """
                                 },
                                 {"role": "user", "content": stock_noti}
@@ -437,12 +443,11 @@ async def process_tweets(conn, tweets):
 
                             info = response.choices[0].message.content
                             info = clean_text(info)
-                            stock_info += f"""{info} """
-                            if entity_type == 'mutual_fund':
-                                if json_data['mutual_fund_business_score'] and json_data['mutual_fund_valuation_score']:
-                                    stock_info += f""" Biz Score: {json_data['mutual_fund_business_score']*100}% Valuation: {json_data['mutual_fund_valuation_score']*100}%"""
+                            stock_info += f"""{info}"""
+                            
                             if entity_type == 'stock':
-                                stock_info += f"""EOD Price: {json_data['eod_price']} Market Cap: {json_data['market_cap']} """
+                                if json_data.get('biz_score_percent') and json_data.get('valuation_score_percent') and json_data.get('eod_price') and json_data.get('market_cap') and json_data.get('trend_score_percent'):
+                                    stock_info += f""" Biz Score: {json_data['biz_score_percent']*100}%, Valuation Score: {json_data['valuation_score_percent']*100}%, EOD Price: {json_data['eod_price']}, Market Cap: {json_data['market_cap']}, Trend Score: {json_data['trend_score_percent']*100}%"""
         
                 if entity_id:
                     users = get_users_for_entity(conn, entity_id[0])
@@ -661,10 +666,10 @@ import asyncio
 
 
 # Run the Lambda handler locally
-if __name__ == "__main__":
-    asyncio.run(async_lambda_handler({}, {}))
+# if __name__ == "__main__":
+#     asyncio.run(async_lambda_handler({}, {}))
 
 
-# def lambda_handler(event, context):
-#     """AWS Lambda synchronous entry point."""
-#     return asyncio.run(async_lambda_handler(event, context))
+def lambda_handler(event, context):
+    """AWS Lambda synchronous entry point."""
+    return asyncio.run(async_lambda_handler(event, context))
