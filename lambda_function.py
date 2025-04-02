@@ -279,6 +279,17 @@ def clean_tweet(text):
     text = re.sub(r" {5,}", "    ", text)  # Replace more than 4 spaces with 4 spaces
     return text.strip()
 
+
+def clean_text(text):
+    try:
+        text = text.replace("\n", " ").replace("\t", " ")  # Remove newlines and tabs
+        text = re.sub(r" {5,}", "    ", text)  # Replace more than 4 spaces with 4 spaces
+        return text.strip()
+    except Exception as e:
+        print(f"Error cleaning text: {e}")
+        return ""
+
+
 def storing_tweets(conn, receivers_list, tweet_text):
     try:
         cursor = conn.cursor()
@@ -393,11 +404,13 @@ async def process_tweets(conn, tweets):
                         json_load = json.dumps(json_data)
 
                         if json_data:
-                            stock_noti = f"""{entity} has been mentioned in a recent notification! {tweet_text}    Biz Score: {json_data['biz_score_percent']} Valuation Score: {json_data['valuation_score_percent']}"""
+
+                            stock_noti = f"""{entity} has been mentioned in a recent notification! {tweet_text}"""
+                            if json['biz_score_percent'] and json['valuation_score_percent']:
+                                stock_noti += f""" Biz Score: {json_data['biz_score_percent']*100}% Valuation Score: {json_data['valuation_score_percent']*100}%"""
                             messages = [
                                 {"role": "system", "content": """
                                     You are a concise and actionable stock-analysis assistant. You will receive:
-                                    1. A stock update text describing recent price/technical signals (e.g. "Golden Cross," "Death Cross," etc.).
                                     2. A Biz Score (0.00 - 1.00).
                                     3. A Valuation Score (0.00 - 1.00).
 
@@ -407,141 +420,16 @@ async def process_tweets(conn, tweets):
                                     (For example, Valuation Score = 0.70 ⇒ the stock is relatively undervalued; 0.30 ⇒ the stock is relatively overvalued.)
 
                                     Your task:
-                                    - Find exactly ONE matching condition from the lists below.
                                     - Output a single short interpretation, in your own words, based on that condition.
-                                    - If multiple conditions match, choose the FIRST one that fits in the order they appear below.
-                                    - If none match, produce a concise fallback such as "No matching signal."
-
+                                    
                                     Make sure your interpretation:
                                     - Is short, direct, and actionable.
                                     - Reflects that a higher Biz Score indicates stronger fundamentals, and a higher Valuation Score indicates more undervaluation.
-                                    - Uses original phrasing (do not copy the examples verbatim, but convey a similar recommendation).
-
-                                    ---
-
-                                    # BULLISH SIGNALS
-
-                                    1) **Golden Cross + Biz Score > 0.65**  
-                                    - Trigger: The text contains "Golden Cross" AND Biz Score > 0.65.  
-                                    - Example Interpretation:  
-                                        > *"It's a good stock to consider buying at these levels and could soon hit a new high."*
-
-                                    2) **Text contains "is creating a more bullish momentum" + Biz Score > 0.60 + Valuation Score > 0.50**  
-                                    - Example Interpretation:  
-                                        > *"You might want to add or buy as there's likely upside soon, and the fundamentals look strong."*
-
-                                    3) **Text contains "is creating a more bullish momentum" + Biz Score > 0.60 + Valuation Score < 0.30**  
-                                    - Example Interpretation:  
-                                        > *"There's potential short-term upside, but watch for profit-taking since it appears overvalued."*
-
-                                    4) **Text contains "is creating a more bullish momentum" + Biz Score < 0.60 + Valuation Score < 0.50**  
-                                    - Example Interpretation:  
-                                        > *"Momentum is up, but fundamentals are weak and it's overvalued—stay alert for any pullbacks."*
-
-                                    5) **Text contains "is showing signs of trend turning bullish, check for resistance at Rs." + Biz Score > 0.60 + Valuation Score > 0.65**  
-                                    - Example Interpretation:  
-                                        > *"Consider buying as the fundamentals are strong and the stock looks undervalued, though the overall trend is still cautious."*
-
-                                    6) **Text contains "is showing signs of trend turning bullish, check for resistance at Rs." + Biz Score < 0.60 + Valuation Score < 0.50**  
-                                    - Example Interpretation:  
-                                        > *"The stock might rise soon, but it's expensive and not fundamentally strong; proceed carefully."*
-
-                                    7) **Text contains "is showing early signs of trend reversing from bearish to bullish but with low confidence" + Biz Score > 0.60 + Valuation Score > 0.65**  
-                                    - Example Interpretation:  
-                                        > *"It may be worth buying with a stop loss in mind, given the good fundamentals and undervalued profile."*
-
-                                    8) **Text contains "has crossed its 52-week high and is now in high bullish momentum..." + Biz Score > 0.60 + Valuation Score > 0.50**  
-                                    - Example Interpretation:  
-                                        > *"A breakout could be on the horizon; fundamentals seem solid and valuation is fair."*
-
-                                    9) **Same '52-week high' phrase + Biz Score > 0.60 + Valuation Score > 0.70**  
-                                    - Example Interpretation:  
-                                        > *"It may break out further; consider buying since it's strong both fundamentally and valuation-wise."*
-
-                                    10) **Same '52-week high' phrase + Biz Score ~0.60 + Valuation Score ~0.50** (If instructions call for it)  
-                                    - Example Interpretation:  
-                                        > *"You could ride this wave, but it may be moderately valued with moderate fundamentals—keep an eye on profit-taking."*
-
-                                    11) **Text contains "has closed at the highest level above the previous highest level of on a closing basis" + Biz Score > 0.65 + Valuation Score > 0.50**  
-                                    - Example Interpretation:  
-                                        > *"Potential breakout ahead; it's fairly valued and the fundamentals look good—an entry might pay off."*
-
-                                    12) **Same phrase + Biz Score > 0.65 + Valuation Score > 0.70**  
-                                    - Example Interpretation:  
-                                        > *"The fundamentals are strong, and it's undervalued. This could be a great opportunity if the trend continues upward."*
-
-                                    13) **Same phrase + Biz Score < 0.60 + Valuation Score < 0.50**  
-                                    - Example Interpretation:  
-                                        > *"It may climb higher short-term, but watch out since fundamentals are weaker and valuation is pricey."*
-
-                                    14) **Text contains "is now above its last one year highest close of on a closing basis" + Biz Score > 0.60 + Valuation Score > 0.50**  
-                                    - Example Interpretation:  
-                                        > *"Chances are for more upside; fundamentals are solid and it's not overpriced."*
-
-                                    15) **Same 'last one year highest close' phrase + Biz Score > 0.60 + Valuation Score > 0.70**  
-                                    - Example Interpretation:  
-                                        > *"There's room to run given strong fundamentals and undervaluation—could be a good buy."*
-
-                                    16) **Same 'last one year highest close' phrase + moderate Biz Score and lower Valuation Score**  
-                                    - Example Interpretation:  
-                                        > *"A potential breakout is in play, but the stock might be overvalued and only moderately solid—stay cautious."*
-
-                                    ---
-
-                                    # BEARISH SIGNALS
-
-                                    1) **"Death Cross" + Biz Score < 0.50 + Valuation Score < 0.50**  
-                                    - Example Interpretation:  
-                                        > *"The chart is turning negative and the stock could be overpriced for its weak fundamentals—be cautious."*
-
-                                    2) **"is showing signs of bearish momentum building and could take support at Rs." + Biz Score < 0.50 + Valuation Score < 0.50**  
-                                    - Example Interpretation:  
-                                        > *"Momentum is turning down, fundamentals are weak, and it's expensive—consider exiting if support breaks."*
-
-                                    3) **Same phrase + Biz Score > 0.65 + Valuation Score > 0.65**  
-                                    - Example Interpretation:  
-                                        > *"Even though the trend is weakening, it's a good company at a fair price, so watch for a rebound at key support."*
-
-                                    4) **"is showing signs of becoming more bearish." + Biz Score > 0.65 + Valuation Score > 0.65**  
-                                    - Example Interpretation:  
-                                        > *"Though fundamentals are strong and it's undervalued, the trend is slipping—maybe rotate out or wait for signs of recovery."*
-
-                                    5) **"is showing signs of becoming more bearish." + Biz Score < 0.50 + Valuation Score < 0.50**  
-                                    - Example Interpretation:  
-                                        > *"It's weak all around, so further decline is likely—exiting might be best unless fundamentals improve."*
-
-                                    6) **"is showing early signs of trend turning bearish but with low confidence." + Biz Score > 0.65 + Valuation Score < 0.50**  
-                                    - Example Interpretation:  
-                                        > *"A possible downshift is coming, and it's overvalued—set stops to guard against deeper losses."*
-
-                                    7) **Same phrase + Biz Score > 0.65 + Valuation Score > 0.65**  
-                                    - Example Interpretation:  
-                                        > *"A mild bearish signal, but it's still a fundamentally solid and fairly valued stock—consider buying dips or setting stops."*
-
-                                    8) **"has broken its 52-week low of and is now in gaining bearish momentum on a closing basis" + Biz Score > 0.65 + Valuation Score > 0.65**  
-                                    - Example Interpretation:  
-                                        > *"A new low is bearish, but the company's quality and undervaluation suggest a rebound might eventually occur."*
-
-                                    9) **Same phrase + Biz Score > 0.65 + Valuation Score < 0.50**  
-                                    - Example Interpretation:  
-                                        > *"It's hitting fresh lows, and it's overvalued—there could be further downside before any reversal."*
-
-                                    10) **"is now below its last one year lowest close of on a closing basis" + Biz Score > 0.65 + Valuation Score > 0.65**  
-                                        - Example Interpretation:  
-                                        > *"Falling below the yearly low is a negative sign, but strong fundamentals and fair valuation might prompt a bounce at some point."*
-
-                                    11) **Same phrase + Biz Score > 0.65 + Valuation Score < 0.50**  
-                                        - Example Interpretation:  
-                                        > *"Breaking the yearly low could mean deeper drops, and it looks overvalued—wait for a better entry or a reversal signal."*
-
-                                    ---
-
-                                    **Remember:** For all of these conditions, produce a **unique** short statement in your own words, capturing the same general advice or insight. If no conditions match,check for the technical signal and scores and interpret as per the above methods"
                                 """
                                 },
                                 {"role": "user", "content": stock_noti}
                             ]
-
+                            ai_client = get_ai_client()
                             response =  ai_client.chat.completions.create(
                                 model=AI_Variables.MODEL_NAME,
                                 messages=messages
@@ -549,7 +437,7 @@ async def process_tweets(conn, tweets):
 
                             info = response.choices[0].message.content
                             info = clean_text(info)
-                            stock_info += f"""{info} Biz Score: {json_data['mutual_fund_business_score']*100}% Valuation: {json_data['mutual_fund_valuation_score']*100}%"""
+                            stock_info += f"""{info} """
                             if entity_type == 'mutual_fund':
                                 if json_data['mutual_fund_business_score'] and json_data['mutual_fund_valuation_score']:
                                     stock_info += f""" Biz Score: {json_data['mutual_fund_business_score']*100}% Valuation: {json_data['mutual_fund_valuation_score']*100}%"""
@@ -567,7 +455,7 @@ async def process_tweets(conn, tweets):
                 for entity, user_name, phone_number, stock_info, entity_id in receivers
             ]
 
-                       
+            print(f"Receivers list: {receivers_list}") 
             # Send notifications to all the users at once
             if receivers_list != []:
                 storing_tweets(conn, receivers_list, tweet_text)
