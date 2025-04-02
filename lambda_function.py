@@ -406,7 +406,7 @@ async def process_tweets(conn, tweets):
                         if json_data:
 
                             stock_noti = f"""{entity} has been mentioned in a recent notification! {tweet_text}"""
-                            if json['biz_score_percent'] and json['valuation_score_percent']:
+                            if json_data['biz_score_percent'] and json_data['valuation_score_percent']:
                                 stock_noti += f""" Biz Score: {json_data['biz_score_percent']*100}% Valuation Score: {json_data['valuation_score_percent']*100}%"""
                             messages = [
                                 {"role": "system", "content": """
@@ -661,10 +661,10 @@ import asyncio
 
 
 # Run the Lambda handler locally
-# if __name__ == "__main__":
-#     asyncio.run(async_lambda_handler({}, {}))
+if __name__ == "__main__":
+    asyncio.run(async_lambda_handler({}, {}))
 
 
-def lambda_handler(event, context):
-    """AWS Lambda synchronous entry point."""
-    return asyncio.run(async_lambda_handler(event, context))
+# def lambda_handler(event, context):
+#     """AWS Lambda synchronous entry point."""
+#     return asyncio.run(async_lambda_handler(event, context))
