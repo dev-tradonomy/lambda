@@ -231,7 +231,7 @@ async def send_bulk_notifications(receivers_list, message, link):
             "whatsapp": {
                 "type": "template",
                 "template": {
-                    "templateName": "latest_updates_v1",
+                    "templateName": "latest_updates_v2",
                     "bodyValues": {
                         "1": "Stock Name",
                         "2": message,
@@ -341,19 +341,19 @@ async def process_tweets(conn, tweets):
             print(f"Processing tweet {tweet_id} from user {user_name}")
 
             # Check if the tweet is already stored
-            if is_tweet_stored(conn, tweet_id):
-                print(f"Skipping already processed tweet: {tweet_id}")
-                continue
+            # if is_tweet_stored(conn, tweet_id):
+            #     print(f"Skipping already processed tweet: {tweet_id}")
+            #     continue
 
             # Store tweet in DB
-            cursor.execute(
-                """
-                INSERT INTO tweets (tweet_id, user_id, user_name, text, created_at)
-                VALUES (%s, %s, %s, %s, %s)
-                ON CONFLICT (tweet_id) DO NOTHING;
-                """,
-                (tweet_id, user_id, user_name, tweet_text, tweet["created_at"])
-            )
+            # cursor.execute(
+            #     """
+            #     INSERT INTO tweets (tweet_id, user_id, user_name, text, created_at)
+            #     VALUES (%s, %s, %s, %s, %s)
+            #     ON CONFLICT (tweet_id) DO NOTHING;
+            #     """,
+            #     (tweet_id, user_id, user_name, tweet_text, tweet["created_at"])
+            # )
 
             # Extract relevant entities
             extracted_data = extracting_data(tweet_text)
@@ -737,7 +737,7 @@ async def async_lambda_handler(event, context):
         # Fetch new tweets
         # tweets = get_recent_tweets()
         tweets = tweets_from_rss_feed
-        # tweets =[{'text': "'I want you to make your own money and not use what I have earned over the years,' JSW Chairman Sajjan Jindal told his Harvard-educated son, who wanted to invest in an EV company. \n\nHe further added that Harsh Goenka and Uday Kotak's sons were smarter than their fathers!'… https://t.co/vKqVyrGrzE https://t.co/HydA28LBjF", 'id': '1897574058218360986', 'edit_history_tweet_ids': ['1897574058218360986'], 'author_id': '631810714', 'created_at': '2025-03-06T09:04:45.000Z'}, {'text': "#MFCorner | @vinnii_motiwala speaks with Shibani Sircar Kurian of Kotak Mahindra AMC and Priti Rathi Gupta of LXME about rising women investors in mutual fund space in this Women's Day special segment.\n#cnbctv18digital #investment #investors #market \n\nWatch here:… https://t.co/iJoNeCfdYz", 'id': '1897569974614638940', 'edit_history_tweet_ids': ['1897569974614638940'], 'author_id': '631810714', 'created_at': '2025-03-06T08:48:31.000Z'}, {'text': 'Midcap Movers | @vamakshidhoria with the big movers in the broader market today. https://t.co/qFUJp3S1hL', 'id': '1897569136181735921', 'edit_history_tweet_ids': ['1897569136181735921'], 'author_id': '631810714', 'created_at': '2025-03-06T08:45:11.000Z'}, {'text': 'Nothing has launched its latest Phone 3a series featuring Phone 3a Pro at ₹29,999. The smartphone is packed with new periscope lens, advanced AI features, and the iconic Glyph interface. @ShibaniGharat with more.  \n\n#nothingphone #3aseries #Glyphinterface #cnbctv18digital… https://t.co/hNzKHSkAwE https://t.co/jxuLcmyP09', 'id': '1897564899905298943', 'edit_history_tweet_ids': ['1897564899905298943'], 'author_id': '631810714', 'created_at': '2025-03-06T08:28:21.000Z'}, {'text': 'Company: Nestle\n\nUpdate Type: Press Release 📰 | Sentiment: Positive 🟢\n\nSummary: Nespresso opens its first boutique in New Delhi, marking a major expansion in India with significant focus on sustainability and premium coffee experience.', 'id': '1897562650802053212', 'edit_history_tweet_ids': ['1897562650802053212'], 'author_id': '1864603590201110528', 'created_at': '2025-03-06T08:19:25.000Z'}, {'text': 'Company: Maan Aluminium\n\nUpdate Type: Acquisition 🛒\n\n📦Acquired Company: Refer Filing\n\n💼Business Overview: Refer Filing\n\n📊Percentage Acquired: Refer Filing\n\n💰Total Consideration Paid: Rs. 8.75 Crs excluding stamp duty and other charges', 'id': '1897561435393401330', 'edit_history_tweet_ids': ['1897561435393401330'], 'author_id': '1864603590201110528', 'created_at': '2025-03-06T08:14:35.000Z'}, {'text': '#Samsung begins the rollout of #Android15 based One UI 7 for older Galaxy devices. Check if your Galaxy device is eligible or not.\n\n@pihuyadav05 @SamsungIndia @SamsungMobile\n\nhttps://t.co/e3CAedqoIO', 'id': '1897561379973816326', 'edit_history_tweet_ids': ['1897561379973816326'], 'author_id': '631810714', 'created_at': '2025-03-06T08:14:22.000Z'}, {'text': "#Apple's rumoured foldable #iPhone might launch in 2026 with a $2,000 price tag, says analyst @mingchikuo\n\nHere are the details | @pihuyadav05\n@apple\n\nhttps://t.co/tRq7r2paSE", 'id': '1897560748852715770', 'edit_history_tweet_ids': ['1897560748852715770'], 'author_id': '631810714', 'created_at': '2025-03-06T08:11:52.000Z'}, {'text': 'Company: Thomas Cook (India)\n\nUpdate Type: Press Release 📰 | Sentiment: Positive 🟢\n\nSummary: Thomas Cook India and SOTC report a 35% growth in demand from female travelers, emphasizing adventure, wellness, and milestone travel. This highlights potential revenue enhancement and… https://t.co/Lvz1q88TQb', 'id': '1897559419027964191', 'edit_history_tweet_ids': ['1897559419027964191'], 'author_id': '1864603590201110528', 'created_at': '2025-03-06T08:06:35.000Z'}]
+        # tweets =[{'text': "RT by @CNBCTV18Live: F&O Weekly Expiry Cat & Mouse - SEBI Steps In ! - Only Tuesday or Thursday allowed - SEBI approval needed to change expiry day So MSEI's Friday is gone. BSE already on Tuesday. NSE, I reckon will want Tuesday as well - makes business sense ! #StockMarket #Nifty #banknifty", 'id': '1897574058218360986', 'edit_history_tweet_ids': ['1897574058218360986'], 'author_id': '631810714', 'created_at': '2025-03-06T09:04:45.000Z'}]
         print(tweets)
         new_tweet_count = len(tweets)
         print(f"Fetched {new_tweet_count} new tweets.")
