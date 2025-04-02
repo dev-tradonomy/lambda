@@ -352,19 +352,19 @@ async def process_tweets(conn, tweets):
             print(f"Processing tweet {tweet_id} from user {user_name}")
 
             # Check if the tweet is already stored
-            # if is_tweet_stored(conn, tweet_id):
-            #     print(f"Skipping already processed tweet: {tweet_id}")
-            #     continue
+            if is_tweet_stored(conn, tweet_id):
+                print(f"Skipping already processed tweet: {tweet_id}")
+                continue
 
             # Store tweet in DB
-            # cursor.execute(
-            #     """
-            #     INSERT INTO tweets (tweet_id, user_id, user_name, text, created_at)
-            #     VALUES (%s, %s, %s, %s, %s)
-            #     ON CONFLICT (tweet_id) DO NOTHING;
-            #     """,
-            #     (tweet_id, user_id, user_name, tweet_text, tweet["created_at"])
-            # )
+            cursor.execute(
+                """
+                INSERT INTO tweets (tweet_id, user_id, user_name, text, created_at)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (tweet_id) DO NOTHING;
+                """,
+                (tweet_id, user_id, user_name, tweet_text, tweet["created_at"])
+            )
 
             # Extract relevant entities
             extracted_data = extracting_data(tweet_text)
