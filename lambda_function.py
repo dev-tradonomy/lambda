@@ -326,7 +326,7 @@ def storing_tweets(conn, receivers_list, tweet_text, link):
 
             cursor.execute(
                 "INSERT INTO notifications (user_id, entity_id, message, created_at, status) VALUES (%s, %s, %s, %s, 'sent')",
-                (user_id, entity_id, tweet_text, created_at)
+                (user_id, entity_id, tweet_message, created_at)
             )
             conn.commit()
     except Exception as e:
@@ -479,7 +479,7 @@ async def process_tweets(conn, tweets):
             # Send notifications to all the users at once
             if receivers_list != []:
                 storing_tweets(conn, receivers_list, tweet_text, tweet['link'])
-                await send_bulk_notifications(receivers_list, tweet_text, tweet['link'])
+                # await send_bulk_notifications(receivers_list, tweet_text, tweet['link'])
 
         cursor.close()
         print("Tweet processing complete.")
@@ -681,10 +681,10 @@ import asyncio
 
 
 # Run the Lambda handler locally
-# if __name__ == "__main__":
-#     asyncio.run(async_lambda_handler({}, {}))
+if __name__ == "__main__":
+    asyncio.run(async_lambda_handler({}, {}))
 
 
-def lambda_handler(event, context):
-    """AWS Lambda synchronous entry point."""
-    return asyncio.run(async_lambda_handler(event, context))
+# def lambda_handler(event, context):
+#     """AWS Lambda synchronous entry point."""
+#     return asyncio.run(async_lambda_handler(event, context))
