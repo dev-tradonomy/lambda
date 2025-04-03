@@ -681,10 +681,10 @@ import asyncio
 
 
 # Run the Lambda handler locally
-if __name__ == "__main__":
-    asyncio.run(async_lambda_handler({}, {}))
+# if __name__ == "__main__":
+#     asyncio.run(async_lambda_handler({}, {}))
 
 
-# def lambda_handler(event, context):
-#     """AWS Lambda synchronous entry point."""
-#     return asyncio.run(async_lambda_handler(event, context))
+def lambda_handler(event, context):
+    """AWS Lambda synchronous entry point."""
+    return asyncio.run(async_lambda_handler(event, context))
