@@ -290,7 +290,7 @@ def clean_text(text):
         return ""
 
 
-def storing_tweets(conn, receivers_list, tweet_text):
+def storing_tweets(conn, receivers_list, tweet_text, link):
     try:
         cursor = conn.cursor()
         for receiver in receivers_list:
@@ -303,11 +303,22 @@ def storing_tweets(conn, receivers_list, tweet_text):
             entity_id = receiver["entity_id"][0]
 
             # Store message history
+            tweet_message = f"""
+                🔔 There's an update on {receiver['entity']}:, 
+
+                ℹ️ Update: {tweet_text}
+
+                🔗 Source: {link}
+
+                📈 Summary: {receiver['stock_info']}
+
+                🤖A.I. powered update by superfolio.ai
+            """
                             
             user_id = user
             cursor.execute(
                 "INSERT INTO message_history (user_id, sender, message, message_type) VALUES (%s, 'bot', %s, %s)",
-                (user_id, tweet_text, 'text')  
+                (user_id, tweet_message, 'text')  
             )
             print(f"Message history stored for user {user_id}, message: {tweet_text}")
 
@@ -407,30 +418,34 @@ async def process_tweets(conn, tweets):
 
                             stock_noti = f"""{entity} has been mentioned in a recent notification! {tweet_text}"""
                             if entity_type == 'stock':
-                                if json_data.get('biz_score_percent') and json_data.get('valuation_score_percent'):
-                                    stock_noti += f""" Biz Score: {json_data['biz_score_percent']*100}% Valuation Score: {json_data['valuation_score_percent']*100}%"""
+                                if json_data.get('biz_score_percent') and json_data.get('valuation_score_percent') and json_data.get('trend_score_percent'):
+                                    stock_noti += f""" Biz Score: {json_data['biz_score_percent']*100}% Valuation Score: {json_data['valuation_score_percent']*100}%  Trend Score: {json_data['trend_score_percent']*100}%"""
                             if entity_type == 'mutual_fund':
                                 if json_data.get('mutual_fund_business_score') and json_data.get('mutual_fund_valuation_score'):
                                     stock_noti += f""" Biz Score: {json_data['mutual_fund_business_score']*100}% Valuation: {json_data['mutual_fund_valuation_score']*100}%"""
                             messages = [
                                 {"role": "system", "content": """
                                     You are a concise and actionable stock-analysis assistant. You will receive:
-                                    2. A Biz Score (0 - 100%).
-                                    3. A Valuation Score (0 - 100%).
-
+                                    1. A Biz Score (0 - 100%).
+                                    2. A Valuation Score (0 - 100%).
+                                    3. A Trend Score (0 - 100%).  
                                     IMPORTANT NOTE about Valuation Score:
                                     - Higher Valuation Score means more UNDERVALUED.
                                     - Lower Valuation Score means more OVERVALUED.
                                     (For example, Valuation Score = 70% ⇒ the stock is relatively undervalued; 30% ⇒ the stock is relatively overvalued.)
 
+                                    Trend Score:
+                                    - Higher Trend Score means more trending the stock is .
+
+
                                     Your task:
-                                    - Output a single short interpretation, in your own words, based on that condition.
+                                    - Output a single short interpretation, in your own words, based on that condition. Also mention Biz Score, Valuation Score, and Trend Score in your response.
                                     
                                     Make sure your interpretation:
                                     - Is short, direct, and actionable.
                                     - Reflects that a higher Biz Score indicates stronger fundamentals, and a higher Valuation Score indicates more undervaluation.
 
-                                    If the Biz Score or Valuation Score is not available, please do not mention then it in your response and do not ask for them. Do the analysis without them.
+                                    If the Biz Score or Valuation Score or Trend Score is not available, please do not mention then it in your response and do not ask for them. Do the analysis without them.
                                 """
                                 },
                                 {"role": "user", "content": stock_noti}
@@ -446,8 +461,8 @@ async def process_tweets(conn, tweets):
                             stock_info += f"""{info}"""
                             
                             if entity_type == 'stock':
-                                if json_data.get('biz_score_percent') and json_data.get('valuation_score_percent') and json_data.get('eod_price') and json_data.get('market_cap') and json_data.get('trend_score_percent'):
-                                    stock_info += f""" Biz Score: {json_data['biz_score_percent']*100}%, Valuation Score: {json_data['valuation_score_percent']*100}%, EOD Price: {json_data['eod_price']}, Market Cap: {json_data['market_cap']}, Trend Score: {json_data['trend_score_percent']*100}%"""
+                                if json_data.get('eod_price') and json_data.get('market_cap'):
+                                    stock_info += f"""EOD Price: {json_data['eod_price']:.2f}, Market Cap: {json_data['market_cap']:.2f}"""
         
                 if entity_id:
                     users = get_users_for_entity(conn, entity_id[0])
@@ -463,7 +478,7 @@ async def process_tweets(conn, tweets):
             print(f"Receivers list: {receivers_list}") 
             # Send notifications to all the users at once
             if receivers_list != []:
-                storing_tweets(conn, receivers_list, tweet_text)
+                storing_tweets(conn, receivers_list, tweet_text, tweet['link'])
                 await send_bulk_notifications(receivers_list, tweet_text, tweet['link'])
 
         cursor.close()
