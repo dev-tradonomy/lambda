@@ -479,7 +479,7 @@ async def process_tweets(conn, tweets):
             # Send notifications to all the users at once
             if receivers_list != []:
                 storing_tweets(conn, receivers_list, tweet_text, tweet['link'])
-                # await send_bulk_notifications(receivers_list, tweet_text, tweet['link'])
+                await send_bulk_notifications(receivers_list, tweet_text, tweet['link'])
 
         cursor.close()
         print("Tweet processing complete.")
