@@ -193,7 +193,7 @@ def chunk_list(lst, chunk_size):
     for i in range(0, len(lst), chunk_size):
         yield lst[i:i + chunk_size]
 
-async def send_bulk_notifications(receivers_list, message, link):
+async def send_bulk_notifications(conn, receivers_list, message, link):
     """
     Sends notifications in batches of 100 users.
     
@@ -207,6 +207,24 @@ async def send_bulk_notifications(receivers_list, message, link):
         "apiSecret": GALLABOX_API_SECRET
     }
 
+    cursor = conn.cursor()
+    cursor.execute("SELECT templates FROM variables WHERE id = 1")
+    row = cursor.fetchone()
+    if not row:
+        template_name="latest_updates_v2"
+        template_variables=['1','2','3','4']
+        print("No template found.")
+    else:
+        template_data = row[0]
+        smart_template = next((t for t in template_data['templates'] if t['type'] == 'latest_template'), None)
+        if smart_template:
+            template_name = smart_template['name']
+            template_variables = smart_template['variables']
+        else:
+            template_name="latest_updates_v2"
+            template_variables=['1','2','3','4']
+        
+
     for batch in chunk_list(receivers_list, batch_size):
         recipient_data = [
             {
@@ -214,10 +232,10 @@ async def send_bulk_notifications(receivers_list, message, link):
                 "phone": user["phone_number"],
                 "templateValues": {
                     "bodyValues": {
-                        "1": user["entity"],
-                        "2": message,
-                        "3": link,
-                        "4": user["stock_info"] if user["stock_info"] else "No additional information available."
+                        template_variables[0]: user["entity"],
+                        template_variables[1]: message,
+                        template_variables[2]: link,
+                        template_variables[3]: user["stock_info"] if user["stock_info"] else "No additional information available."
                     }
                 }
             }
@@ -231,12 +249,12 @@ async def send_bulk_notifications(receivers_list, message, link):
             "whatsapp": {
                 "type": "template",
                 "template": {
-                    "templateName": "latest_updates_v2",
+                    "templateName": template_name,
                     "bodyValues": {
-                        "1": "Stock Name",
-                        "2": message,
-                        "3": link,
-                        "4": "Stock Info"
+                        template_variables[0]: "Stock Name",
+                        template_variables[1]: message,
+                        template_variables[2]: link,
+                        template_variables[3]: "Stock Info"
                     }
                 }
             }
@@ -479,7 +497,7 @@ async def process_tweets(conn, tweets):
             # Send notifications to all the users at once
             if receivers_list != []:
                 storing_tweets(conn, receivers_list, tweet_text, tweet['link'])
-                await send_bulk_notifications(receivers_list, tweet_text, tweet['link'])
+                await send_bulk_notifications(conn, receivers_list, tweet_text, tweet['link'])
 
         cursor.close()
         print("Tweet processing complete.")
