@@ -435,7 +435,8 @@ async def process_tweets(conn, tweets):
 
                         if json_data:
 
-                            stock_noti = f"""{entity} has been mentioned in a recent notification! {tweet_text}"""
+                            stock_noti = f"""{entity} has been mentioned in a recent notification! 
+                                Tweet Text: {tweet_text}"""
                             if entity_type == 'stock':
                                 if json_data.get('biz_score_percent') and json_data.get('valuation_score_percent') and json_data.get('trend_score_percent'):
                                     stock_noti += f""" Biz Score: {json_data['biz_score_percent']*100}% Valuation Score: {json_data['valuation_score_percent']*100}%  Trend Score: {json_data['trend_score_percent']*100}%"""
@@ -465,6 +466,10 @@ async def process_tweets(conn, tweets):
                                     - Reflects that a higher Biz Score indicates stronger fundamentals, and a higher Valuation Score indicates more undervaluation.
 
                                     If the Biz Score or Valuation Score or Trend Score is not available, please do not mention then it in your response and do not ask for them. Do the analysis without them.
+
+                                    Analyse the impact of the tweet text on the stocks fundamentals by also assessing the scores provided and to give the A.I. summary. 
+                                    Remember to avoid any analysis when not required, such as tweet text that doesn't mention any crucial company information.
+
                                 """
                                 },
                                 {"role": "user", "content": stock_noti}
