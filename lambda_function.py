@@ -330,7 +330,7 @@ def storing_tweets(conn, receivers_list, tweet_text, link):
 
                 📈 Summary: {receiver['stock_info']}
 
-                🤖A.I. powered update by superfolio.ai
+                🤖A.I. powered update by tradonomy.ai
             """
                             
             user_id = user
