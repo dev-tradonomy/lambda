@@ -2,7 +2,7 @@ import os
 import requests
 import psycopg2
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pydantic import BaseModel, Field
 from openai import OpenAI
 from langchain_core.prompts import ChatPromptTemplate
@@ -330,7 +330,7 @@ def storing_tweets(conn, receivers_list, tweet_text, link):
 
                 📈 Summary: {receiver['stock_info']}
 
-                🤖A.I. powered update by superfolio.ai
+                🤖A.I. powered update by tradonomy.ai
             """
                             
             user_id = user
@@ -340,10 +340,11 @@ def storing_tweets(conn, receivers_list, tweet_text, link):
             )
             print(f"Message history stored for user {user_id}, message: {tweet_text}")
 
-            created_at = int(datetime.utcnow().timestamp() * 1000) 
+            # created_at = int(datetime.utcnow().timestamp() * 1000) 
+            created_at = int(datetime.now(timezone.utc).timestamp() * 1000)
 
             cursor.execute(
-                "INSERT INTO notifications (user_id, entity_id, message, created_at, status) VALUES (%s, %s, %s, %s, 'sent')",
+                "INSERT INTO notifications (user_id, entity_id, message, created_at, status, category) VALUES (%s, %s, %s, %s, 'sent', 'Latest Updates')",
                 (user_id, entity_id, tweet_message, created_at)
             )
             conn.commit()
@@ -663,7 +664,16 @@ async def async_lambda_handler(event, context):
         # Fetch new tweets
         # tweets = get_recent_tweets()
         tweets = tweets_from_rss_feed
-        # tweets =[{'text': "RT by @CNBCTV18Live: F&O Weekly Expiry Cat & Mouse - SEBI Steps In ! - Only Tuesday or Thursday allowed - SEBI approval needed to change expiry day So MSEI's Friday is gone. BSE already on Tuesday. NSE, I reckon will want Tuesday as well - makes business sense ! #StockMarket #Nifty #banknifty", 'id': '1897574058218360986', 'edit_history_tweet_ids': ['1897574058218360986'], 'author_id': '631810714', 'created_at': '2025-03-06T09:04:45.000Z'}]
+        # tweets =[{'text': "RT by @CNBCTV18Live: F&O Weekly Expiry Cat & Mouse - SEBI Steps In ! - Only Tuesday or Thursday allowed - SEBI approval needed to change expiry day So MSEI's Friday is gone. BSE already on Tuesday. NSE, I reckon will want Tuesday as well - makes business sense ! #StockMarket #Nifty #banknifty", 'id': '1897574058218360991', 'edit_history_tweet_ids': ['1897574058218360986'], 'author_id': '631810714', 'created_at': '2025-03-06T09:04:45.000Z'}]
+        # tweets = [{
+        #     "author_id": "CNBCTV18Live",
+        #     "created_at": "Thu, 06 Mar 2025 09:04:45 GMT",
+        #     "id": "1897574058218360996",
+        #     "link": "https://twitter.com/CNBCTV18Live/status/1897574058218360991",
+        #     "text": "F&O Weekly Expiry Cat & Mouse - SEBI Steps In! Only Tuesday or Thursday allowed. SEBI approval needed to change expiry day. So MSEI's Friday is gone. BSE already on Tuesday. NSE, I reckon, will want Tuesday as well - makes business sense! #StockMarket #Nifty #banknifty",
+        #     "username": "CNBCTV18Live"
+        # }]
+
         print(tweets)
         new_tweet_count = len(tweets)
         print(f"Fetched {new_tweet_count} new tweets.")
