@@ -175,13 +175,15 @@ def get_users_for_entity(conn, entity_id):
             FROM watchlist_entity w
             JOIN watchlists ws ON w.watchlist_id = ws.watchlist_id
             JOIN users u ON ws.user_id = u.user_id
-            WHERE w.entity_id = %s
+            WHERE w.entity_id = %s AND u.profile_status = 'active'
+            
             UNION
+            
             SELECT u.user_id, u.phone_number, u.name
             FROM portfolio_holdings ph
             JOIN portfolios p ON ph.portfolio_id = p.portfolio_id
             JOIN users u ON p.user_id = u.user_id
-            WHERE ph.entity_id = %s
+            WHERE ph.entity_id = %s AND u.profile_status = 'active'
         ) AS user_data;
     """
     cursor.execute(query, (entity_id, entity_id))
@@ -673,7 +675,7 @@ async def async_lambda_handler(event, context):
         # tweets = [{
         #     "author_id": "CNBCTV18Live",
         #     "created_at": "Thu, 06 Mar 2025 09:04:45 GMT",
-        #     "id": "1897574058218360996",
+        #     "id": "1897574058218360997",
         #     "link": "https://twitter.com/CNBCTV18Live/status/1897574058218360991",
         #     "text": "F&O Weekly Expiry Cat & Mouse - SEBI Steps In! Only Tuesday or Thursday allowed. SEBI approval needed to change expiry day. So MSEI's Friday is gone. BSE already on Tuesday. NSE, I reckon, will want Tuesday as well - makes business sense! #StockMarket #Nifty #banknifty",
         #     "username": "CNBCTV18Live"
