@@ -41,9 +41,9 @@ password = os.getenv("NEO4J_PASSWORD")
 
 # AI Variables
 class AI_Variables:
-    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-    MODEL_NAME = "gpt-4o-mini"
-    LANGCHAIN_MODEL = "gpt-4o-mini"
+    OPENAI_API_KEY = ""
+    MODEL_NAME = ""
+    LANGCHAIN_MODEL = "gpt-4.1-mini"
 
 class ExtractInfo(BaseModel):
     stock: list[str] = Field(default=[], description="List of stock names to be searched in the database.")
@@ -59,12 +59,25 @@ def extracting_data(user_message:str):
         
         tagging_prompt = ChatPromptTemplate.from_template(
             """
-                Extract the following details from the user's input if available:
-                - Stock names (as a list)
+                Extract the following financial entities from the user's input, if mentioned:
+                - Stock names (as a list of company names or ticker symbols)
                 - Mutual fund names (as a list)
                 
                 **Important Notes:**
-                - If the user specifies a company name (e.g., "Apple," "Tesla"), classify it under **stock**.
+                1. If the user specifies a company name (e.g., "Apple," "Tesla"), classify it under **stock**.
+
+                2. If an entity isn’t clearly a stock name or fund, **leave it out**. Be conservative — prefer empty lists over incorrect guesses.
+
+                3. Do not infer entities. Only extract names if they are explicitly mentioned.
+
+                4. Never classify general financial adjectives or investment categories under "stock".
+
+                5. Only extract **concrete, real-world entities** — ignore vague descriptors or categories like:
+                - Market cap terms: "large-cap", "mid-cap", "small-cap"
+                - Quality types: "blue-chip", "growth stock", "value stock", "penny stock"
+                - Risk terms: "low-risk", "high-risk", "safe bet"
+                - Investment strategies: "momentum stocks", "undervalued stocks"
+                - General labels: "top stocks", "best performers", "rising stars", "ace investors", "big investors", "indices", etc.
                 
                 Respond **only** in JSON format:
                 {{
@@ -399,7 +412,9 @@ async def process_tweets(conn, tweets):
             )
 
             # Extract relevant entities
+            print(f"\nExtracting entities from tweet: {tweet_text}\n")
             extracted_data = extracting_data(tweet_text)
+            print(f"Extracted Data: {extracted_data}")
             matched_entities = set()
             for entity_name in extracted_data["stock"]:
                 matched_entities.update(fetch_similar_entities(conn, entity_name, "stock_info", "stock_name"))
@@ -440,10 +455,10 @@ async def process_tweets(conn, tweets):
                             stock_noti = f"""{entity} has been mentioned in a recent notification! 
                                 Tweet Text: {tweet_text}"""
                             if entity_type == 'stock':
-                                if json_data.get('biz_score_percent') and json_data.get('valuation_score_percent') and json_data.get('trend_score_percent'):
+                                if json_data.get('biz_score_percent') is not None and json_data.get('valuation_score_percent') is not None and json_data.get('trend_score_percent') is not None:
                                     stock_noti += f""" Biz Score: {json_data['biz_score_percent']*100}% Valuation Score: {json_data['valuation_score_percent']*100}%  Trend Score: {json_data['trend_score_percent']*100}%"""
                             if entity_type == 'mutual_fund':
-                                if json_data.get('mutual_fund_business_score') and json_data.get('mutual_fund_valuation_score'):
+                                if json_data.get('mutual_fund_business_score') is not None and json_data.get('mutual_fund_valuation_score') is not None:
                                     stock_noti += f""" Biz Score: {json_data['mutual_fund_business_score']*100}% Valuation: {json_data['mutual_fund_valuation_score']*100}%"""
                             messages = [
                                 {"role": "system", "content": """
@@ -490,6 +505,7 @@ async def process_tweets(conn, tweets):
                                 if json_data.get('eod_price') and json_data.get('market_cap'):
                                     stock_info += f"""EOD Price: {json_data['eod_price']:.2f}, Market Cap: {json_data['market_cap']:.2f}"""
         
+                print(f"\nStock info for {entity}: {stock_info}\n")
                 if entity_id:
                     users = get_users_for_entity(conn, entity_id[0])
                     for user_id, phone_number, user_name in users:
@@ -501,7 +517,7 @@ async def process_tweets(conn, tweets):
                 for entity, user_name, phone_number, stock_info, entity_id in receivers
             ]
 
-            print(f"Receivers list: {receivers_list}") 
+            print(f"\nReceivers list: {receivers_list}\n") 
             # Send notifications to all the users at once
             if receivers_list != []:
                 storing_tweets(conn, receivers_list, tweet_text, tweet['link'])
@@ -649,6 +665,24 @@ async def async_lambda_handler(event, context):
             host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASSWORD, port=DB_PORT
         )
 
+        # Create a cursor
+        cur = conn.cursor()
+
+        # Execute query to get entry with id = 1
+        cur.execute("SELECT * FROM variables WHERE id = %s;", (1,))
+
+        # Fetch the row
+        row = cur.fetchone()
+
+        # Check and print result
+        if row:
+            print(row)
+        else:
+            print("No entry found with id = 1")
+
+        AI_Variables.MODEL_NAME = row[1]
+        AI_Variables.OPENAI_API_KEY = row[2]
+
         # Fetch current tweet counts
         # daily_count, monthly_count = get_tweet_counts(conn)
         # print(f"Current tweet counts - Daily: {daily_count}, Monthly: {monthly_count}")
@@ -675,9 +709,9 @@ async def async_lambda_handler(event, context):
         # tweets = [{
         #     "author_id": "CNBCTV18Live",
         #     "created_at": "Thu, 06 Mar 2025 09:04:45 GMT",
-        #     "id": "1897574058218360997",
+        #     "id": "1897974058218361016",
         #     "link": "https://twitter.com/CNBCTV18Live/status/1897574058218360991",
-        #     "text": "F&O Weekly Expiry Cat & Mouse - SEBI Steps In! Only Tuesday or Thursday allowed. SEBI approval needed to change expiry day. So MSEI's Friday is gone. BSE already on Tuesday. NSE, I reckon, will want Tuesday as well - makes business sense! #StockMarket #Nifty #banknifty",
+        #     "text": "RT by @CNBCTV18Live: Material escalation with Israeli strikes on Iranian nuclear facilities & Iranian commanders/scientists. Oil surged +13%, now stabilizing around +6–8%. I look at the big risk - a potential closure of the Strait of Hormuz ! #Israel #Iran #StockMarket #Nifty #BankNifty",
         #     "username": "CNBCTV18Live"
         # }]
 
