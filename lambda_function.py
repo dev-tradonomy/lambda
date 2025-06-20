@@ -326,6 +326,7 @@ def clean_text(text):
 def storing_tweets(conn, receivers_list, tweet_text, link):
     try:
         cursor = conn.cursor()
+        created_at = int(datetime.now().timestamp() * 1000)
         for receiver in receivers_list:
             cursor.execute("SELECT user_id FROM users WHERE phone_number = %s", (receiver["phone_number"],))
             user = cursor.fetchone()
@@ -356,7 +357,6 @@ def storing_tweets(conn, receivers_list, tweet_text, link):
             print(f"Message history stored for user {user_id}, message: {tweet_text}")
 
             # created_at = int(datetime.utcnow().timestamp() * 1000) 
-            created_at = int(datetime.now(timezone.utc).timestamp() * 1000)
 
             cursor.execute(
                 "INSERT INTO notifications (user_id, entity_id, message, created_at, status, category) VALUES (%s, %s, %s, %s, 'sent', 'Latest Updates')",
@@ -506,6 +506,23 @@ async def process_tweets(conn, tweets):
                                     stock_info += f"""EOD Price: {json_data['eod_price']:.2f}, Market Cap: {json_data['market_cap']:.2f}"""
         
                 print(f"\nStock info for {entity}: {stock_info}\n")
+                # Store message history
+                tweet_message = f"""
+                    🔔 There's an update on {entity}:, 
+
+                    ℹ️ Update: {tweet_text}
+
+                    🔗 Source: {tweet['link']}
+
+                    📈 Summary: {stock_info}
+
+                    🤖A.I. powered update by tradonomy.ai
+                """
+                cursor.execute(
+                    "INSERT INTO stock_notifications (entity_id, message, status, category) VALUES (%s, %s, 'sent', 'Latest Updates')",
+                    (entity_id, tweet_message)
+                )
+                conn.commit()
                 if entity_id:
                     users = get_users_for_entity(conn, entity_id[0])
                     for user_id, phone_number, user_name in users:
@@ -682,6 +699,8 @@ async def async_lambda_handler(event, context):
 
         AI_Variables.MODEL_NAME = row[1]
         AI_Variables.OPENAI_API_KEY = row[2]
+
+        conn.commit()
 
         # Fetch current tweet counts
         # daily_count, monthly_count = get_tweet_counts(conn)
