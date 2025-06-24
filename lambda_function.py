@@ -431,6 +431,9 @@ async def process_tweets(conn, tweets):
             for entity in matched_entities:
                 cursor.execute("SELECT id FROM entity WHERE entity_name = %s", (entity,))
                 entity_id = cursor.fetchone()
+                if not entity_id:
+                    print(f"Entity '{entity}' not found in database. Skipping.")
+                    continue
                 cursor.execute("SELECT entity_type FROM entity WHERE entity_name = %s", (entity,))
                 entity_type = cursor.fetchone()
                 entity_type = entity_type[0] if entity_type else None
@@ -728,9 +731,9 @@ async def async_lambda_handler(event, context):
         # tweets = [{
         #     "author_id": "CNBCTV18Live",
         #     "created_at": "Thu, 06 Mar 2025 09:04:45 GMT",
-        #     "id": "1897974058218361016",
+        #     "id": "1897974058218361101",
         #     "link": "https://twitter.com/CNBCTV18Live/status/1897574058218360991",
-        #     "text": "RT by @CNBCTV18Live: Material escalation with Israeli strikes on Iranian nuclear facilities & Iranian commanders/scientists. Oil surged +13%, now stabilizing around +6–8%. I look at the big risk - a potential closure of the Strait of Hormuz ! #Israel #Iran #StockMarket #Nifty #BankNifty",
+        #     "text": "#NTPCGreenEnergy secures 1,000 MW solar project in #UPPCL solar auction\n@ranimegha229",
         #     "username": "CNBCTV18Live"
         # }]
 
@@ -745,7 +748,7 @@ async def async_lambda_handler(event, context):
             }
 
         # Update tweet counts
-        # update_tweet_counts(conn, tweets)
+        update_tweet_counts(conn, tweets)
 
         # Process tweets
         await process_tweets(conn, tweets)
