@@ -695,9 +695,7 @@ async def async_lambda_handler(event, context):
         row = cur.fetchone()
 
         # Check and print result
-        if row:
-            print(row)
-        else:
+        if not row:
             print("No entry found with id = 1")
 
         AI_Variables.MODEL_NAME = row[1]
@@ -752,6 +750,21 @@ async def async_lambda_handler(event, context):
 
         # Process tweets
         await process_tweets(conn, tweets)
+
+        # 🕒 Check time condition
+        if should_run_sync(): # should_run_sync()
+            print("Running Neo4j → Postgres sync...")
+            try:
+                stock_data = fetch_neo4j_stock_data()
+                upsert_postgres_stock(conn, stock_data)
+                print(f"Synced {len(stock_data)} records from Neo4j to Postgres.")
+                mutual_fund_data = fetch_neo4j_mutual_fund_data()
+                upsert_postgres_mutual_fund(conn, mutual_fund_data)
+                print(f"Synced {len(mutual_fund_data)} mutual fund records from Neo4j to Postgres.")
+                upsert_postgres_entity(conn, stock_data, mutual_fund_data)
+                print("Synced entities from Neo4j to Postgres.")
+            except Exception as e:
+                print(f"Error during sync: {e}")
         
         return {
             "statusCode": 200,
@@ -767,6 +780,286 @@ async def async_lambda_handler(event, context):
     finally:
         conn.commit()
         conn.close()
+
+def should_run_sync():
+    """Run sync only at 12:00 AM and 12:00 PM UTC."""
+    now = datetime.utcnow()
+    # Check if current time is between 12:00:00 and 12:14:59 (AM or PM)
+    return (now.hour == 0 or now.hour == 12) and now.minute < 15
+
+def fetch_neo4j_stock_data():
+    """Fetch stock data from Neo4j."""
+    try: 
+        # Implement the logic to connect to Neo4j and fetch stock data
+        cypher_query = """
+            MATCH (s:Stock)
+            RETURN DISTINCT s.isin AS isin, s.stock_name AS stock_name, s.nse_code AS nse_code
+        """
+        results = connector.query(cypher_query)
+        print(len(results))
+
+        return results
+    except Exception as e:
+        print(f"Error fetching Neo4j stock data: {e}")
+        return []
+
+def fetch_neo4j_mutual_fund_data():
+    """Fetch mutual fund data from Neo4j."""
+    try:
+        # Implement the logic to connect to Neo4j and fetch mutual fund data
+        cypher_query = """
+            MATCH (s:MutualFund)
+            WHERE NOT s.sd_scheme_isin STARTS WITH "XX"
+            WITH s.scheme_name AS mf_name, collect(s.sd_scheme_isin)[0] AS isin
+            RETURN DISTINCT mf_name, isin
+        """
+        results = connector.query(cypher_query)
+        print(len(results))
+
+        return results
+    except Exception as e:
+        print(f"Error fetching Neo4j mutual fund data: {e}")
+        return []
+
+def upsert_postgres_mutual_fund(conn, mutual_fund_data):    
+    """Efficiently upsert mutual fund data into Postgres."""
+    try:
+        cur = conn.cursor()
+
+        # Fetch existing mutual funds
+        cur.execute("SELECT id, isin, mutual_fund FROM mutual_fund_info")
+        rows = cur.fetchall()
+        existing_isin_map = {row[1]: (row[0], row[2]) for row in rows}
+        existing_name_map = {row[2]: (row[0], row[1]) for row in rows}
+
+        to_insert = []
+        to_update_isin = []
+        to_update_name = []
+
+        for d in mutual_fund_data:
+            mf_name = d.get('mf_name', '')
+            isin = d.get('isin', '')
+
+            if mf_name in existing_name_map:
+                db_id, db_isin = existing_name_map[mf_name]
+                if db_isin != isin:
+                    # Mutual fund name exists but ISIN changed, update ISIN
+                    to_update_isin.append((isin, db_id))
+                    print(f"🔄 Queue ISIN update for {mf_name}")
+
+            elif isin in existing_isin_map:
+                db_id, db_name = existing_isin_map[isin]
+                if db_name != mf_name:
+                    # ISIN exists but mutual fund name changed, update mutual fund name
+                    embedding = generate_embedding(mf_name)
+                    if not embedding:
+                        continue
+                    embedding_array = "[" + ",".join(map(str, embedding)) + "]"
+                    to_update_name.append((mf_name, embedding_array, db_id))
+                    print(f"🔄 Queue mutual fund name update for {isin}")
+
+            else:
+                # New ISIN, insert new row
+                embedding = generate_embedding(mf_name)
+                if not embedding:
+                    continue
+                embedding_array = "[" + ",".join(map(str, embedding)) + "]"
+                to_insert.append((mf_name, embedding_array, isin))
+                print(f"➕ Queue insert: {mf_name} / {isin}")
+
+        # Batch insert
+        if to_insert:
+            args_str = ','.join(cur.mogrify("(%s, %s::vector, %s)", x).decode() for x in to_insert)
+            cur.execute(
+                f"INSERT INTO mutual_fund_info (mutual_fund, embedding, isin) VALUES {args_str}"
+            )
+
+        # Batch update (still row by row, but only for those that changed)
+        for isin, db_id in to_update_isin:
+            cur.execute(
+            """
+            UPDATE mutual_fund_info
+            SET isin = %s
+            WHERE id = %s
+            """,
+            (isin, db_id)
+        )
+
+        for mf_name, embedding_array, db_id in to_update_name:
+            cur.execute(
+            """
+            UPDATE mutual_fund_info
+            SET mutual_fund = %s, embedding = %s::vector
+            WHERE id = %s       
+            """,
+            (mf_name, embedding_array, db_id)
+        )
+        conn.commit()
+        print("✅ Mutual fund data batch upsert completed.")    
+    except Exception as e:
+        print(f"❌ Database connection error: {e}")
+        return None
+
+def upsert_postgres_entity(conn, stock_data, mutual_fund_data):
+    """Upsert stock and mutual fund entities into Postgres."""
+    try:
+        cur = conn.cursor()
+
+        # Prepare stock and mutual fund entities
+        stock_entities = [(d['isin'], d['stock_name'], 'stock') for d in stock_data if d.get('isin')]
+        mutual_fund_entities = [(d['isin'], d['mf_name'], 'mutual_fund') for d in mutual_fund_data if d.get('isin')]
+        all_entities = stock_entities + mutual_fund_entities
+
+        # Fetch existing entities
+        cur.execute("SELECT id, entity_name, isin, entity_type FROM entity")
+        rows = cur.fetchall()
+        name_type_map = {(row[1], row[3]): (row[0], row[2]) for row in rows if row[1] and row[3]}
+        isin_map = {row[2]: (row[0], row[1], row[3]) for row in rows if row[2]}
+
+        to_insert = []
+        to_update_isin = []
+        to_update_name_type = []
+
+        for isin, name, entity_type in all_entities:
+            key = (name, entity_type)
+            if key in name_type_map:
+                db_id, db_isin = name_type_map[key]
+                if db_isin != isin:
+                    to_update_isin.append((isin, db_id))
+                    print(f"🔄 Queue ISIN update for {name} / {isin}")
+            elif isin in isin_map:
+                db_id, db_name, db_entity_type = isin_map[isin]
+                if db_name != name or db_entity_type != entity_type:
+                    to_update_name_type.append((name, entity_type, db_id))
+                    print(f"🔄 Queue name update for {isin} / {name}")
+            else:
+                to_insert.append((name, isin, entity_type))
+                print(f"➕ Queue insert: {name} / {isin}")
+
+        # Batch insert
+        if to_insert:
+            args_str = ','.join(cur.mogrify("(%s, %s, %s)", x).decode() for x in to_insert)
+            cur.execute(
+                f"INSERT INTO entity (entity_name, isin, entity_type) VALUES {args_str}"
+            )
+
+        # Batch update ISIN
+        for isin, db_id in to_update_isin:
+            cur.execute(
+                """
+                UPDATE entity
+                SET isin = %s
+                WHERE id = %s
+                """,
+                (isin, db_id)
+            )
+
+        # Batch update name/type
+        for name, entity_type, db_id in to_update_name_type:
+            cur.execute(
+                """
+                UPDATE entity
+                SET entity_name = %s, entity_type = %s
+                WHERE id = %s
+                """,
+                (name, entity_type, db_id)
+            )
+
+        conn.commit()
+        print("✅ Entity data batch upsert completed.")
+    except Exception as e:
+        print(f"❌ Database connection error: {e}")
+
+def upsert_postgres_stock(conn, stock_data):
+    """Efficiently upsert stock data into Postgres."""
+    try:
+        cur = conn.cursor()
+
+        # Fetch existing stocks
+        cur.execute("SELECT id, isin, stock_name FROM stock_info")
+        rows = cur.fetchall()
+        existing_isin_map = {row[1]: (row[0], row[2]) for row in rows}
+        existing_name_map = {row[2]: (row[0], row[1]) for row in rows}
+
+        to_insert = []
+        to_update_isin = []
+        to_update_name = []
+
+        for d in stock_data:
+            stock_name = d.get('stock_name', '')
+            nse_code = d.get('nse_code', '')
+            isin = d.get('isin', '')
+
+            if nse_code and nse_code != 'None':
+                combined_input = f"{nse_code}, {stock_name}"
+            else:
+                combined_input = stock_name
+
+            # embedding = generate_embedding(combined_input)
+            # if not embedding:
+            #     continue
+            # embedding_array = "[" + ",".join(map(str, embedding)) + "]"
+
+            if stock_name in existing_name_map:
+                db_id, db_isin = existing_name_map[stock_name]
+                if db_isin != isin:
+                    # Stock name exists but ISIN changed, update ISIN
+                    to_update_isin.append((isin, db_id))
+                    print(f"🔄 Queue ISIN update for {stock_name}")
+
+            elif isin in existing_isin_map:
+                db_id, db_name = existing_isin_map[isin]
+                if db_name != stock_name:
+                    # ISIN exists but stock name changed, update stock name
+                    embedding = generate_embedding(combined_input)
+                    if not embedding:
+                        continue
+                    embedding_array = "[" + ",".join(map(str, embedding)) + "]"
+                    to_update_name.append((stock_name, embedding_array, db_id))
+                    print(f"🔄 Queue stock name update for {isin}")
+
+            else:
+                # New ISIN, insert new row
+                embedding = generate_embedding(combined_input)
+                if not embedding:
+                    continue
+                embedding_array = "[" + ",".join(map(str, embedding)) + "]"
+                to_insert.append((stock_name, embedding_array, isin))
+                print(f"➕ Queue insert: {stock_name} / {isin}")
+
+        # Batch insert
+        if to_insert:
+            args_str = ','.join(cur.mogrify("(%s, %s::vector, %s)", x).decode() for x in to_insert)
+            cur.execute(
+                f"INSERT INTO stock_info (stock_name, embedding, isin) VALUES {args_str}"
+            )
+
+        # Batch update (still row by row, but only for those that changed)
+        for isin, db_id in to_update_isin:
+            cur.execute(
+            """
+            UPDATE stock_info
+            SET isin = %s
+            WHERE id = %s
+            """,
+            (isin, db_id)
+        )
+
+        for stock_name, embedding_array, db_id in to_update_name:
+            cur.execute(
+            """
+            UPDATE stock_info
+            SET stock_name = %s, embedding = %s::vector
+            WHERE id = %s
+            """,
+            (stock_name, embedding_array, db_id)
+        )
+
+        conn.commit()
+        print("✅ Stock embedding data batch upsert completed.")
+
+    except Exception as e:
+        print(f"❌ Database connection error: {e}")
 
 import asyncio
 
