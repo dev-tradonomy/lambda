@@ -18,8 +18,7 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN python3 -m pip install --upgrade pip && \
     mkdir -p ./python && \
-    pip install -r requirements.txt --platform manylinux2014_x86_64 --target ./python --only-binary=:all: && \
-    pip install psycopg2-binary --platform manylinux2014_x86_64 --target ./python --only-binary=:all:
+    pip install -r requirements.txt --target ./python
 
 # Copy function code
 COPY lambda_function.py .

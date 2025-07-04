@@ -619,168 +619,6 @@ def update_tweet_counts(conn, new_tweets):
 
     conn.commit()
 
-
-
-from bs4 import BeautifulSoup
-import requests
-from html import unescape
-
-
-
-def parse_rss_to_json(url):
-    try:
-        response = requests.get(url)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.content, "lxml-xml") 
-
-        output = []
-
-        for item in soup.find_all("item"):
-            title = item.title.text if item.title else ""
-            link = item.link.text if item.link else ""
-            pub_date = item.pubDate.text if item.pubDate else ""
-            author = "Unknown"
-            if url == "https://rss.app/feeds/Zwny9tJJ2sbTM5Xn.xml":
-                author = "CNBCTV18Live"
-            elif url == "https://rss.app/feeds/yFpZIEo9p3B8H30p.xml":
-                author = "marketalertsz"
-            elif url == "https://rss.app/feeds/7sMGzrCLFpAQ79bh.xml":
-                author = "tradonomy"
-
-            entry_data = {
-                "author_id": author,
-                "created_at": pub_date,
-                "id": link.split("/")[-1],
-                "link": link,
-                "text": unescape(title).strip(),
-                "username": author
-            }
-
-            output.append(entry_data)
-
-        return output
-    except Exception as e:
-        print(f"Error parsing RSS feed: {e}")
-        return []
-
-async def async_lambda_handler(event, context):
-    """AWS Lambda handler function."""
-    try:
-
-        rss_urls = [
-            "https://rss.app/feeds/Zwny9tJJ2sbTM5Xn.xml","https://rss.app/feeds/yFpZIEo9p3B8H30p.xml","https://rss.app/feeds/7sMGzrCLFpAQ79bh.xml"
-        ]
-        tweets_from_rss_feed = []
-        for url in rss_urls:
-            try:
-                result = parse_rss_to_json(url)
-                tweets_from_rss_feed.extend(result)
-                if result:
-                    print(f"Data from {url}:\n{result}\n")
-            except Exception as e:
-                raise Exception(f"An error occurred while processing {url}: {e}")
-        
-        # Connect to the database
-        conn = psycopg2.connect(
-            host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASSWORD, port=DB_PORT
-        )
-
-        # Create a cursor
-        cur = conn.cursor()
-
-        # Execute query to get entry with id = 1
-        cur.execute("SELECT * FROM variables WHERE id = %s;", (1,))
-
-        # Fetch the row
-        row = cur.fetchone()
-
-        # Check and print result
-        if not row:
-            print("No entry found with id = 1")
-
-        AI_Variables.MODEL_NAME = row[1]
-        AI_Variables.OPENAI_API_KEY = row[2]
-
-        conn.commit()
-
-        # Fetch current tweet counts
-        # daily_count, monthly_count = get_tweet_counts(conn)
-        # print(f"Current tweet counts - Daily: {daily_count}, Monthly: {monthly_count}")
-
-        # Check if limits are exceeded
-        # if daily_count >= MAX_DAILY_TWEETS:
-        #     print("Daily tweet limit reached. Skipping processing.")
-        #     return {
-        #         "statusCode": 200,
-        #         "body": json.dumps({"message": "Daily tweet limit reached. No tweets processed."})
-        #     }
-
-        # if monthly_count >= MAX_MONTHLY_TWEETS:
-        #     print("Monthly tweet limit reached. Skipping processing.")
-        #     return {
-        #         "statusCode": 200,
-        #         "body": json.dumps({"message": "Monthly tweet limit reached. No tweets processed."})
-        #     }
-
-        # Fetch new tweets
-        # tweets = get_recent_tweets()
-        tweets = tweets_from_rss_feed
-        # tweets =[{'text': "RT by @CNBCTV18Live: F&O Weekly Expiry Cat & Mouse - SEBI Steps In ! - Only Tuesday or Thursday allowed - SEBI approval needed to change expiry day So MSEI's Friday is gone. BSE already on Tuesday. NSE, I reckon will want Tuesday as well - makes business sense ! #StockMarket #Nifty #banknifty", 'id': '1897574058218360991', 'edit_history_tweet_ids': ['1897574058218360986'], 'author_id': '631810714', 'created_at': '2025-03-06T09:04:45.000Z'}]
-        # tweets = [{
-        #     "author_id": "CNBCTV18Live",
-        #     "created_at": "Thu, 06 Mar 2025 09:04:45 GMT",
-        #     "id": "1897974058218361101",
-        #     "link": "https://twitter.com/CNBCTV18Live/status/1897574058218360991",
-        #     "text": "#NTPCGreenEnergy secures 1,000 MW solar project in #UPPCL solar auction\n@ranimegha229",
-        #     "username": "CNBCTV18Live"
-        # }]
-
-        print(tweets)
-        new_tweet_count = len(tweets)
-        print(f"Fetched {new_tweet_count} new tweets.")
-
-        if new_tweet_count == 0:
-            return {
-                "statusCode": 200,
-                "body": json.dumps({"message": "No new tweets to process."})
-            }
-
-        # Update tweet counts
-        update_tweet_counts(conn, tweets)
-
-        # Process tweets
-        await process_tweets(conn, tweets)
-
-        # 🕒 Check time condition
-        if should_run_sync(): # should_run_sync()
-            print("Running Neo4j → Postgres sync...")
-            try:
-                stock_data = fetch_neo4j_stock_data()
-                upsert_postgres_stock(conn, stock_data)
-                print(f"Synced {len(stock_data)} records from Neo4j to Postgres.")
-                mutual_fund_data = fetch_neo4j_mutual_fund_data()
-                upsert_postgres_mutual_fund(conn, mutual_fund_data)
-                print(f"Synced {len(mutual_fund_data)} mutual fund records from Neo4j to Postgres.")
-                upsert_postgres_entity(conn, stock_data, mutual_fund_data)
-                print("Synced entities from Neo4j to Postgres.")
-            except Exception as e:
-                print(f"Error during sync: {e}")
-        
-        return {
-            "statusCode": 200,
-            "body": json.dumps({"message": "Tweets fetched, processed, and notifications sent."})
-        }
-    
-    except Exception as e:
-        print(f"Error in Lambda Handler: {e}")
-        return {
-            "statusCode": 500,
-            "body": json.dumps({"error": str(e)})
-        }
-    finally:
-        conn.commit()
-        conn.close()
-
 def should_run_sync():
     """Run sync only at 12:00 AM and 12:00 PM UTC."""
     now = datetime.utcnow()
@@ -791,9 +629,10 @@ def fetch_neo4j_stock_data():
     """Fetch stock data from Neo4j."""
     try: 
         # Implement the logic to connect to Neo4j and fetch stock data
+     
         cypher_query = """
             MATCH (s:Stock)
-            RETURN DISTINCT s.isin AS isin, s.stock_name AS stock_name, s.nse_code AS nse_code
+            RETURN DISTINCT s.isin AS isin, s.stock_name AS stock_name, s.nse_code AS nse_code, s.bsecode AS bse_code
         """
         results = connector.query(cypher_query)
         print(len(results))
@@ -1060,6 +899,263 @@ def upsert_postgres_stock(conn, stock_data):
 
     except Exception as e:
         print(f"❌ Database connection error: {e}")
+
+import yfinance as yf # peewee, multitasking, websockets, tzdata, pycparser, protobuf, platformdirs, frozendict, pandas, cffi, curl_cffi, yfinance
+
+def get_ticker_list_from_neo4j():
+    stocks = fetch_neo4j_stock_data()
+    ticker_list = []
+    for stock in stocks:
+        nse_code = stock.get("nse_code")
+        bse_code = stock.get("bse_code")
+        if nse_code and nse_code != "None":
+            ticker_list.append(f"{nse_code}.NS")
+        elif bse_code and bse_code != "None":
+            # Convert float bse_code to int, then to str, to avoid .0 in ticker
+            try:
+                bse_code_str = str(int(float(bse_code)))
+            except Exception:
+                bse_code_str = str(bse_code)
+            ticker_list.append(f"{bse_code_str}.BO")
+    return ticker_list
+
+import time
+import math
+
+def fetch_current_prices_batchwise(ticker_list, batch_size=100, sleep_time=2):
+    """
+    Fetch current prices for a large ticker list in batches.
+    :param ticker_list: List of ticker symbols.
+    :param batch_size: Number of tickers per batch.
+    :param sleep_time: Seconds to sleep between batches.
+    :return: Dict of {ticker: price}
+    """
+    all_prices = {}
+    for i in range(0, len(ticker_list), batch_size):
+        batch = ticker_list[i:i+batch_size]
+        data = yf.download(batch, period="1d", interval="1m", group_by='ticker', threads=True)
+        if len(batch) == 1:
+            last_row = data.iloc[-1]
+            price = last_row['Close']
+            if not math.isnan(price):
+                all_prices[batch[0]] = round(float(price) * 100) / 100 # Round to 2 decimal places
+        else:
+            for ticker in batch:
+                try:
+                    last_row = data[ticker].iloc[-1]
+                    price = last_row['Close']
+                    if not math.isnan(price):
+                        all_prices[ticker] = round(float(price) * 100) / 100 # Round to 2 decimal places
+                except Exception as e:
+                    pass  # Skip tickers with errors or missing data
+        print(f"Fetched prices for batch {i//batch_size + 1}/{(len(ticker_list) + batch_size - 1) // batch_size}")
+        time.sleep(sleep_time)  # polite delay to avoid rate limits
+    return all_prices
+
+def update_bulk_prices_in_neo4j(price_data):
+    """
+    Update current prices in Neo4j for all tickers in bulk.
+    :param price_data: Dict of {ticker: price}
+    """
+    updates = []
+    for ticker, price in price_data.items():
+        # Remove .NS/.BO for matching with nse_code/bse_code in Neo4j
+        if '.' in ticker:
+            code, suffix = ticker.split(".")
+        else:
+            code, suffix = ticker, ""
+        updates.append({
+            "code": code,
+            "suffix": suffix,
+            "current_price": price
+        })
+
+    cypher_query = """
+    UNWIND $updates AS update
+    MATCH (s:Stock)
+    WHERE (update.suffix = 'NS' AND s.nse_code = update.code)
+       OR (update.suffix = 'BO' AND s.bsecode = update.code)
+    SET s.eod_price = update.current_price,
+        s.updated_at = datetime({timezone: 'Asia/Kolkata'})
+    """
+    connector.query(cypher_query, {"updates": updates})
+    print(f"✅ Updated current prices in Neo4j for {len(price_data)} tickers.")
+
+from bs4 import BeautifulSoup
+import requests
+from html import unescape
+
+
+
+def parse_rss_to_json(url):
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.content, "lxml-xml") 
+
+        output = []
+
+        for item in soup.find_all("item"):
+            title = item.title.text if item.title else ""
+            link = item.link.text if item.link else ""
+            pub_date = item.pubDate.text if item.pubDate else ""
+            author = "Unknown"
+            if url == "https://rss.app/feeds/Zwny9tJJ2sbTM5Xn.xml":
+                author = "CNBCTV18Live"
+            elif url == "https://rss.app/feeds/yFpZIEo9p3B8H30p.xml":
+                author = "marketalertsz"
+            elif url == "https://rss.app/feeds/7sMGzrCLFpAQ79bh.xml":
+                author = "tradonomy"
+
+            entry_data = {
+                "author_id": author,
+                "created_at": pub_date,
+                "id": link.split("/")[-1],
+                "link": link,
+                "text": unescape(title).strip(),
+                "username": author
+            }
+
+            output.append(entry_data)
+
+        return output
+    except Exception as e:
+        print(f"Error parsing RSS feed: {e}")
+        return []
+
+async def async_lambda_handler(event, context):
+    """AWS Lambda handler function."""
+    try:
+
+        rss_urls = [
+            "https://rss.app/feeds/Zwny9tJJ2sbTM5Xn.xml","https://rss.app/feeds/yFpZIEo9p3B8H30p.xml","https://rss.app/feeds/7sMGzrCLFpAQ79bh.xml"
+        ]
+        tweets_from_rss_feed = []
+        for url in rss_urls:
+            try:
+                result = parse_rss_to_json(url)
+                tweets_from_rss_feed.extend(result)
+                if result:
+                    print(f"Data from {url}:\n{result}\n")
+            except Exception as e:
+                raise Exception(f"An error occurred while processing {url}: {e}")
+        
+        # Connect to the database
+        conn = psycopg2.connect(
+            host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASSWORD, port=DB_PORT
+        )
+
+        # Create a cursor
+        cur = conn.cursor()
+
+        # Execute query to get entry with id = 1
+        cur.execute("SELECT * FROM variables WHERE id = %s;", (1,))
+
+        # Fetch the row
+        row = cur.fetchone()
+
+        # Check and print result
+        if not row:
+            print("No entry found with id = 1")
+
+        AI_Variables.MODEL_NAME = row[1]
+        AI_Variables.OPENAI_API_KEY = row[2]
+
+        conn.commit()
+
+        # Fetch current tweet counts
+        # daily_count, monthly_count = get_tweet_counts(conn)
+        # print(f"Current tweet counts - Daily: {daily_count}, Monthly: {monthly_count}")
+
+        # Check if limits are exceeded
+        # if daily_count >= MAX_DAILY_TWEETS:
+        #     print("Daily tweet limit reached. Skipping processing.")
+        #     return {
+        #         "statusCode": 200,
+        #         "body": json.dumps({"message": "Daily tweet limit reached. No tweets processed."})
+        #     }
+
+        # if monthly_count >= MAX_MONTHLY_TWEETS:
+        #     print("Monthly tweet limit reached. Skipping processing.")
+        #     return {
+        #         "statusCode": 200,
+        #         "body": json.dumps({"message": "Monthly tweet limit reached. No tweets processed."})
+        #     }
+
+        # Fetch new tweets
+        # tweets = get_recent_tweets()
+        tweets = tweets_from_rss_feed
+        # tweets =[{'text': "RT by @CNBCTV18Live: F&O Weekly Expiry Cat & Mouse - SEBI Steps In ! - Only Tuesday or Thursday allowed - SEBI approval needed to change expiry day So MSEI's Friday is gone. BSE already on Tuesday. NSE, I reckon will want Tuesday as well - makes business sense ! #StockMarket #Nifty #banknifty", 'id': '1897574058218360991', 'edit_history_tweet_ids': ['1897574058218360986'], 'author_id': '631810714', 'created_at': '2025-03-06T09:04:45.000Z'}]
+        # tweets = [{
+        #     "author_id": "CNBCTV18Live",
+        #     "created_at": "Thu, 06 Mar 2025 09:04:45 GMT",
+        #     "id": "1897974058218361103",
+        #     "link": "https://twitter.com/CNBCTV18Live/status/1897574058218360991",
+        #     "text": "#NTPCGreenEnergy secures 1,000 MW solar project in #UPPCL solar auction\n@ranimegha229",
+        #     "username": "CNBCTV18Live"
+        # }]
+
+        print(tweets)
+        new_tweet_count = len(tweets)
+        print(f"Fetched {new_tweet_count} new tweets.")
+
+        if new_tweet_count == 0:
+            return {
+                "statusCode": 200,
+                "body": json.dumps({"message": "No new tweets to process."})
+            }
+
+        # Update tweet counts
+        update_tweet_counts(conn, tweets)
+
+        # Process tweets
+        await process_tweets(conn, tweets)
+
+        # Fetch ticker list from Neo4j
+        ticker_list = get_ticker_list_from_neo4j()
+        print(f"Total tickers fetched: {len(ticker_list)}")
+        print(ticker_list)
+
+        # Fetch current prices in batches
+        price_data = fetch_current_prices_batchwise(ticker_list, batch_size=100, sleep_time=2)
+        print()
+        print(f"Fetched current prices for {len(price_data)} tickers.")
+        print(price_data)
+
+        # Update prices in Neo4j
+        update_bulk_prices_in_neo4j(price_data)
+
+        # 🕒 Check time condition
+        if should_run_sync(): # should_run_sync()
+            print("Running Neo4j → Postgres sync...")
+            try:
+                stock_data = fetch_neo4j_stock_data()
+                upsert_postgres_stock(conn, stock_data)
+                print(f"Synced {len(stock_data)} records from Neo4j to Postgres.")
+                mutual_fund_data = fetch_neo4j_mutual_fund_data()
+                upsert_postgres_mutual_fund(conn, mutual_fund_data)
+                print(f"Synced {len(mutual_fund_data)} mutual fund records from Neo4j to Postgres.")
+                upsert_postgres_entity(conn, stock_data, mutual_fund_data)
+                print("Synced entities from Neo4j to Postgres.")
+            except Exception as e:
+                print(f"Error during sync: {e}")
+        
+        # Close Neo4j connection
+        connector.close()
+        return {
+            "statusCode": 200,
+            "body": json.dumps({"message": "Tweets fetched, processed, and notifications sent."})
+        }
+    
+    except Exception as e:
+        print(f"Error in Lambda Handler: {e}")
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"error": str(e)})
+        }
+    finally:
+        conn.commit()
+        conn.close()
 
 import asyncio
 
