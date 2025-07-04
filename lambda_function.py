@@ -2,17 +2,22 @@ import os
 import requests
 import psycopg2
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pydantic import BaseModel, Field
 from openai import OpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 from fastapi import HTTPException
-from fastapi.responses import JSONResponse
 import httpx
-from itertools import islice
 from neo4j import GraphDatabase
 import re
+import asyncio
+from bs4 import BeautifulSoup
+import requests
+from html import unescape
+import time
+import math
+import yfinance as yf # peewee, multitasking, websockets, tzdata, pycparser, protobuf, platformdirs, frozendict, pandas, cffi, curl_cffi, yfinance
 
 # Environment variables
 BEARER_TOKEN = os.getenv("TWITTER_BEARER_TOKEN")
@@ -900,8 +905,6 @@ def upsert_postgres_stock(conn, stock_data):
     except Exception as e:
         print(f"❌ Database connection error: {e}")
 
-import yfinance as yf # peewee, multitasking, websockets, tzdata, pycparser, protobuf, platformdirs, frozendict, pandas, cffi, curl_cffi, yfinance
-
 def get_ticker_list_from_neo4j():
     stocks = fetch_neo4j_stock_data()
     ticker_list = []
@@ -918,9 +921,6 @@ def get_ticker_list_from_neo4j():
                 bse_code_str = str(bse_code)
             ticker_list.append(f"{bse_code_str}.BO")
     return ticker_list
-
-import time
-import math
 
 def fetch_current_prices_batchwise(ticker_list, batch_size=100, sleep_time=2):
     """
@@ -976,16 +976,10 @@ def update_bulk_prices_in_neo4j(price_data):
     WHERE (update.suffix = 'NS' AND s.nse_code = update.code)
        OR (update.suffix = 'BO' AND s.bsecode = update.code)
     SET s.eod_price = update.current_price,
-        s.updated_at = datetime({timezone: 'Asia/Kolkata'})
+        s.updated_at = datetime({timezone: 'Asia/Kolkata'}).epochMillis
     """
     connector.query(cypher_query, {"updates": updates})
     print(f"✅ Updated current prices in Neo4j for {len(price_data)} tickers.")
-
-from bs4 import BeautifulSoup
-import requests
-from html import unescape
-
-
 
 def parse_rss_to_json(url):
     try:
@@ -1156,8 +1150,6 @@ async def async_lambda_handler(event, context):
     finally:
         conn.commit()
         conn.close()
-
-import asyncio
 
 
 # Run the Lambda handler locally
