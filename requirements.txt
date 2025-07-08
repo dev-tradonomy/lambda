@@ -9,4 +9,3 @@ httpx
 neo4j
 beautifulsoup4
 lxml
-yfinance

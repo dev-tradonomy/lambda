@@ -15,9 +15,6 @@ import asyncio
 from bs4 import BeautifulSoup
 import requests
 from html import unescape
-import time
-import math
-import yfinance as yf # peewee, multitasking, websockets, tzdata, pycparser, protobuf, platformdirs, frozendict, pandas, cffi, curl_cffi, yfinance
 
 # Environment variables
 BEARER_TOKEN = os.getenv("TWITTER_BEARER_TOKEN")
@@ -905,82 +902,6 @@ def upsert_postgres_stock(conn, stock_data):
     except Exception as e:
         print(f"❌ Database connection error: {e}")
 
-def get_ticker_list_from_neo4j():
-    stocks = fetch_neo4j_stock_data()
-    ticker_list = []
-    for stock in stocks:
-        nse_code = stock.get("nse_code")
-        bse_code = stock.get("bse_code")
-        if nse_code and nse_code != "None":
-            ticker_list.append(f"{nse_code}.NS")
-        elif bse_code and bse_code != "None":
-            # Convert float bse_code to int, then to str, to avoid .0 in ticker
-            try:
-                bse_code_str = str(int(float(bse_code)))
-            except Exception:
-                bse_code_str = str(bse_code)
-            ticker_list.append(f"{bse_code_str}.BO")
-    return ticker_list
-
-def fetch_current_prices_batchwise(ticker_list, batch_size=100, sleep_time=2):
-    """
-    Fetch current prices for a large ticker list in batches.
-    :param ticker_list: List of ticker symbols.
-    :param batch_size: Number of tickers per batch.
-    :param sleep_time: Seconds to sleep between batches.
-    :return: Dict of {ticker: price}
-    """
-    all_prices = {}
-    for i in range(0, len(ticker_list), batch_size):
-        batch = ticker_list[i:i+batch_size]
-        data = yf.download(batch, period="1d", interval="1m", group_by='ticker', threads=True)
-        if len(batch) == 1:
-            last_row = data.iloc[-1]
-            price = last_row['Close']
-            if not math.isnan(price):
-                all_prices[batch[0]] = round(float(price) * 100) / 100 # Round to 2 decimal places
-        else:
-            for ticker in batch:
-                try:
-                    last_row = data[ticker].iloc[-1]
-                    price = last_row['Close']
-                    if not math.isnan(price):
-                        all_prices[ticker] = round(float(price) * 100) / 100 # Round to 2 decimal places
-                except Exception as e:
-                    pass  # Skip tickers with errors or missing data
-        print(f"Fetched prices for batch {i//batch_size + 1}/{(len(ticker_list) + batch_size - 1) // batch_size}")
-        time.sleep(sleep_time)  # polite delay to avoid rate limits
-    return all_prices
-
-def update_bulk_prices_in_neo4j(price_data):
-    """
-    Update current prices in Neo4j for all tickers in bulk.
-    :param price_data: Dict of {ticker: price}
-    """
-    updates = []
-    for ticker, price in price_data.items():
-        # Remove .NS/.BO for matching with nse_code/bse_code in Neo4j
-        if '.' in ticker:
-            code, suffix = ticker.split(".")
-        else:
-            code, suffix = ticker, ""
-        updates.append({
-            "code": code,
-            "suffix": suffix,
-            "current_price": price
-        })
-
-    cypher_query = """
-    UNWIND $updates AS update
-    MATCH (s:Stock)
-    WHERE (update.suffix = 'NS' AND s.nse_code = update.code)
-       OR (update.suffix = 'BO' AND s.bsecode = update.code)
-    SET s.eod_price = update.current_price,
-        s.updated_at = datetime({timezone: 'Asia/Kolkata'}).epochMillis
-    """
-    connector.query(cypher_query, {"updates": updates})
-    print(f"✅ Updated current prices in Neo4j for {len(price_data)} tickers.")
-
 def parse_rss_to_json(url):
     try:
         response = requests.get(url)
@@ -1104,20 +1025,6 @@ async def async_lambda_handler(event, context):
 
         # Process tweets
         await process_tweets(conn, tweets)
-
-        # Fetch ticker list from Neo4j
-        ticker_list = get_ticker_list_from_neo4j()
-        print(f"Total tickers fetched: {len(ticker_list)}")
-        print(ticker_list)
-
-        # Fetch current prices in batches
-        price_data = fetch_current_prices_batchwise(ticker_list, batch_size=100, sleep_time=2)
-        print()
-        print(f"Fetched current prices for {len(price_data)} tickers.")
-        print(price_data)
-
-        # Update prices in Neo4j
-        update_bulk_prices_in_neo4j(price_data)
 
         # 🕒 Check time condition
         if should_run_sync(): # should_run_sync()
